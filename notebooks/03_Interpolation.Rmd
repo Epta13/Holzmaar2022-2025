@@ -1,0 +1,107 @@
+---
+title: "Interpolation"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Installing and loading packages
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#install.packages("pacman")
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(pacman)
+
+pacman::p_unload(pacman::p_loaded(), character.only = TRUE)
+
+pacman::p_load("tibble","readxl","dplyr","tidyr","openxlsx","car","rstatix", "DT", "data.table")
+```
+
+## Calling functions
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+Scripts  <- file.path("../notebooks/Functions", fsep="/")
+source(file.path(Scripts, "utility_functions.r", fsep="/" ))
+```
+
+## Preparing the data frames into a suitable format
+
+As the XRF data are from a long core composite and we look only at the Late-Glacial section, the starting composite depth is not 0 but 10989 mm (10.9m). Our concatenated hyperspectral data are on a scale from 0mm. Therefore, we need to adjust the depth to the XRF depth.
+
+```{r}
+HSI_data <- read_excel("../data/HZM_HSI_calibrated.xlsx", col_types = "numeric")
+NewScale <- read_excel("../data/SourceData/HZM19_LG_section_XRF.xlsx") 
+CleanedScale <- read_excel("../data/XRF_HZM_alr.xlsx")
+
+
+# Creating a new columns with converted HSI depths to the XRF depths (0 -> 10989)
+Source <- add_column(HSI_data, "Depth_LG_comp"= as.numeric(HSI_data$Sediment.Y..mm. + as.numeric(NewScale[1,"comp_depth_mm"])), .before = HSI_data$Sediment.Y..mm.) 
+
+#Saving as a csv file
+write.table(Source,file="../data/HSI_HR_data.csv", sep=";",row.names = FALSE)
+
+# Exctracting the XRF depth scale to a separate file (optional)
+Destin <- data.frame("depth"= as.integer(NewScale$comp_depth_mm))
+
+#Saving as a csv file
+write.table(Destin,file="../data/XRF_scale.csv",sep=";", row.names = FALSE)
+
+# Exctracting the XRF depth scale to a separate file (optional)
+Destin2 <- data.frame("depth"= as.integer(CleanedScale$`Composite depth (mm)`))
+
+#Saving as a csv file
+write.table(Destin2,file="../data/XRF_scale_cleaned.csv",sep=";", row.names = FALSE)
+```
+
+# Loading the prepared XRF and HSI data for interpolation
+
+```{r}
+Source <- read.csv(file= "../data/HSI_HR_data.csv", header=TRUE,sep=";")
+Destin <- read.csv(file="../data/XRF_scale.csv", header=TRUE,sep=";") 
+Destin2 <-read.csv(file="../data/XRF_scale_cleaned.csv", header=TRUE,sep=";") 
+```
+
+# Interpolating the data
+
+```{r}
+Names  <- colnames(Source)
+
+#interpolate data for all columns
+Data <- Destin2
+for (i in 2:ncol(Source)){
+  temp     <- approx(Source[,1], Source[,i], xout=Destin2[,1])
+  Data[,i] <- temp$y
+}
+
+# Replace destination depth with interpolated depth (just to be sure it worked)
+Data[,1] <- temp$x
+# Replace column names with actual names 
+colnames(Data) <- c("Depth_mm",Names[2:length(Names)])
+```
+
+# Saving the interpolated HSI data
+
+```{r}
+# write output file
+write.table(Data,file="../data/HSI_interpolated_cleaned.csv",sep=";",row.names = FALSE)
+
+write.xlsx(Data, "../data/HSI_interpolated_cleaned.xlsx", rowNames = FALSE)
+```
+
+# Validation
+
+Plots the old and the new data for comparison
+
+```{r}
+for(j in 2:ncol(Source)){
+layout(matrix(c(1,2),1,2, byrow = TRUE))
+plot(Source[,j],-Source[,1], type="l", main="Original"    ,xlab=colnames(Source[j]),ylab=colnames(  Data[1]))
+plot(  Data[,j],  -Data[,1], type="l", main="interpolated",xlab=colnames(  Data[j]),ylab=colnames(  Data[1]))
+}
+
+
+#par(.def_par)
+
+```

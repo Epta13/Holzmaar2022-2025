@@ -1,0 +1,2567 @@
+---
+title: R Notebook
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Loading and installing packages
+
+```{r include=FALSE}
+#install.packages("pacman")
+```
+
+```{r include=FALSE}
+library("pacman")
+
+pacman::p_unload(pacman::p_loaded(), character.only = TRUE)
+
+pacman::p_load("readxl", "dplyr", "tidyr", "openxlsx", "FactoMineR", "cluster", "factoextra", "magrittr", "vegan", "ggplot2", "rioja", "psych", "dendroextras", "rcartocolor", "latex2exp", "ggsci", "ggpubr", "corrplot", "viridis", "cowplot", "ggrepel", "janitor", "pheatmap","scatterplot3d", "tidypaleo", "grid", "ggtext", "bruceR", "gapminder", "forcats", "ggthemes", "ggmap", "maps", "reshape2")
+```
+
+```{r}
+# Create timestamped filename
+timestamp_filename <- function(base_path, filename_prefix, extension = ".png") {
+  timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  file.path(base_path, paste0(filename_prefix, "_", timestamp, extension))
+}
+```
+
+# Loading data
+
+Cleaning and preparing datasets of the low res data for the stats
+
+First we load the low resolution dataset, which contains of: TOC, TN, TC, TS, sequential extraction fractions of Fe, Mn and P, diatom counts and pigment concentrations:
+
+-   Sheet Redox_Dia_PigOM is pigments normalized by the organic matter content
+
+-   Sheet Redox_Dia_PigBulk contains pigment concentrations normalized by bulk wet sediment weight and
+
+-   Sheet Redox_Dia_PigOMug is the pigment concentrations normalized by OM content and converted from nmol/g to ug/g).
+
+The conversion can be also done on the bulk normalized pigment concentration by using the molecular weights in the Sheet "Pig conversion".
+
+```{r}
+LR_all <- read_excel("../data/SourceData/LR_data.xlsx", sheet = "Redox_Dia_PigOMug")
+
+depth_LR <- select(LR_all, 1)
+age_LR <- select(LR_all, 3)
+Pig <- select(LR_all, 20:106)
+Pig_da <- select(LR_all, 1,3, 20:88, 94:95, 101:104, 108:109, 204)
+Pig_totals <- select(LR_all, 107:111)
+Redox <- select(LR_all, 8:19)
+Dia <- select(LR_all, 112:202)
+Dia_da <- select(LR_all, 1,3, 112:202, 204)
+PolZ <- select(LR_all, 204)
+Dia_totals <- select(LR_all, 203)
+#LowRes_XRF_raw <- select(LowRes_all, 211:241)
+#LowRes_HSI <- select(LowRes_all, 14:20)
+
+```
+
+```{r}
+PollenZPig <- data.frame("age" = c(15342, 14444, 13611, 13011, 12727, 12607.4), "zone" = c("Pleniglacial", "Bølling", "Allerød", "LST", "Younger Dryas", "")) #14993.4 (bottom age for depth plots)
+PollenZPig <- LOOKUP(PollenZPig, c("age"), LR_all, c("mean_VT22"), "depth_VT22")
+PollenZPig$depth <- PollenZPig$depth_VT22/1000
+
+PollenZPig <- PollenZPig %>% mutate(color= case_when(zone == "Pleniglacial" ~ "blue",
+                           zone == "Bølling" ~ "red",
+                           zone == "Allerød" ~ "red", 
+                          zone == "LST" ~ "lightgray", 
+                           zone == "Younger Dryas" ~ "blue")
+   )
+
+PollenZPig <- PollenZPig %>% mutate(line= case_when(zone == "Pleniglacial" ~ "solid",
+                           zone == "Bølling" ~ "solid",
+                           zone == "Allerød" ~ "solid", 
+                          zone == "LST" ~ "solid", 
+                           zone == "Younger Dryas" ~ "solid")
+   )
+
+PollenZPig <- PollenZPig %>% mutate(aplha= case_when(zone == "Pleniglacial" ~ "0.8",
+                           zone == "Bølling" ~ "0.8",
+                           zone == "Allerød" ~ "0.8", 
+                          zone == "LST" ~ "0.2", 
+                           zone == "Younger Dryas" ~ "0.8")
+   )
+```
+
+# Pigment data exploration
+
+First we clean up only the pigment data, as the resolution of the other data is even lower (e.g., diatoms), we explore datasets one by one.
+
+```{r}
+Pig_da.nan<-na.omit(Pig_da)
+#Pig.clean <- Pig.nan[which(colMeans(=0(Pig.nan)) >= .95)]
+
+remove_high_zero_columns <- function(data) {
+  # Calculate the proportion of zeros in each column
+  prop_zeros <- colMeans(data == 0)
+  # Keep columns with less than or equal to 90% zeros
+  data[, prop_zeros <= 0.5]
+}
+# Remove columns with high zero proportion
+Pig_da.clean <- as.data.frame(remove_high_zero_columns(Pig_da.nan))
+
+Pig.clean <- select(Pig_da.clean, 3:22)
+```
+
+## K-means clustering
+
+deciding on the number of clusters, with the elbow method
+
+```{r}
+fviz_nbclust(Pig.clean, kmeans, method = "wss")
+```
+
+Plotting the selected number of clusters on top of the plot
+
+```{r}
+# To save the plot, you can uncomment the first and the last line of this section 
+#png(filename = "No_clusters_K-means.png", width = 500, height = 500, units = "px", pointsize = 12) 
+
+fviz_nbclust(Pig.clean, kmeans, method = "wss") + geom_vline(xintercept = 3, linetype = 2)+ 
+  #here you can add the number of clusters to be shown in with a line 
+  labs(subtitle = "Elbow method")
+#dev.off()
+```
+
+### K-means clustering
+
+```{r}
+#make this example reproducible 
+set.seed(100) 
+#perform k-means clustering with k = 5 clusters 
+km <- kmeans(Pig.clean, centers = 3, nstart = 25) 
+
+#plot results of final k-means model 
+
+#To save the plot, you can uncomment the first and the last line of this section 
+#png(filename = "K-means_clusters.png", width = 500, height = 500, units = "px", pointsize = 12) 
+fviz_cluster(km, data = Pig.clean) 
+#dev.off()
+```
+
+```{r}
+#LR 
+cluster_assignments <- as.data.frame(km$cluster) 
+colnames(cluster_assignments) <- 'K_means_cluster'
+df_clustered <- cbind(Pig_da.clean, cluster_assignments) 
+ #this may need to be changed depending on the number of pigments
+```
+
+## Hierarchical unconstrained clustering
+
+Standardizing the data for clustering
+
+```{r}
+data <- as.matrix(Pig.clean) 
+# Standardise data for CLUSTER analysis, z-scoring
+data_standardized <- data 
+for(i in 1:ncol(data_standardized) ) {
+  data_standardized[ , i] <- data_standardized[,i]/sd(data_standardized[,i]) 
+  }
+```
+
+```{r}
+# Compute hierarchical clustering 
+res.hc <- data_standardized %>% scale() %>% 
+# Scale the data 
+dist(method = "euclidean") %>% 
+  # Compute dissimilarity matrix 
+  hclust(method = "ward.D2")
+# Compute hierachical clustering
+```
+
+Visualize the clusters using dendrogram
+
+```{r}
+# Visualize using factoextra 
+# Cut in x groups and color by groups 
+
+#To save the plot, you can uncomment the first and the last line of this section 
+# png(filename = "~/work/holzmaar/figs/Pigments_Hclust_dendrogram.png", width = 800, height = 500, units = "px", pointsize = 12) 
+
+fviz_dend(res.hc, k = 3, # Cut in four groups 
+          cex = 0.5, # label size 
+          k_colors = c("#2E9FDF", "#00AFBB", "#E7B800", "#FC4E07","#6e57d2" ), color_labels_by_k = TRUE, # color labels by groups 
+          rect = TRUE # Add rectangle around groups 
+          )
+# dev.off()
+```
+
+Save the clusters to your dataset
+
+```{r}
+#LR 
+clust <- hclust(dist(data_standardized, method="euclidean"), method="ward.D2") 
+clustercut<-cbind(1:nrow(data_standardized),cutree(clust,3)) 
+colnames(clustercut) <- c('order','Hcluster')
+df_clustered <- bind_cols(df_clustered, clustercut) 
+```
+
+## Hierarchical constrained clustering CONISS
+
+Standardize data before CONISS clustering
+
+```{r}
+data <- as.matrix(Pig.clean) 
+# Standardise data for CLUSTER analysis 
+data_standardized <- data 
+for(i in 1:ncol(data_standardized) ) { 
+  data_standardized[ , i] <- data_standardized[,i]/sd(data_standardized[,i]) 
+  }
+```
+
+### Compute hierarchical clustering
+
+```{r}
+bstick(chclust(dist(data_standardized, method="euclidean"), method="coniss"), 15)
+```
+
+### Cluster
+
+```{r}
+#Dendrogram classic 
+clust <- chclust(dist(data_standardized, method="euclidean"), method="coniss") 
+#plot(clust, hang=-1, horiz=FALSE, x.rev=TRUE, cex= 0.8)
+
+```
+
+### Visualize dendrogram
+
+```{r}
+plot(clust, hang=-1, horiz=FALSE, x.rev=TRUE, cex= 0.8) 
+# Number of clusters 
+k <- 4
+groups <- cutree(clust, k=k) 
+rect.hclust(clust, k=k, border="red") 
+box(lty="solid")
+data.clust<-cbind(data,groups) 
+t <- as.data.frame(groups)
+
+```
+
+```{r}
+# Visualize using factoextra 
+# Cut in 4 groups and color by groups 
+#quartz() 
+
+#To save the plot, you can uncomment the first and the last line of this section 
+# png(filename = "~/work/holzmaar/figs/Pigments_CONISS_dendrogram.png", width = 800, height = 500, units = "px", pointsize = 12) 
+
+fviz_dend(clust, k = 4, # Cut in four groups 
+          cex = 0.5, # label size 
+          k_colors = c("#2E9FDF", "#00AFBB", "#E7B800", "#FC4E07","#6e57d2", "yellow", "green", "black"), color_labels_by_k = TRUE, # color labels by groups 
+          rect = TRUE # Add rectangle around groups 
+          )
+
+# dev.off()
+```
+
+### Visualise the CONISS clusters on the age-plotted pigment concetrations
+
+```{r}
+#Define colour scheme
+p.col <- c(rep("forestgreen", times=4), rep("gold2", times=18), rep("blue", times=39))
+# Define y axis 
+y.scale <- Pig_da.clean$mean_VT22
+
+
+# Cluster analysis
+
+ma.dist <- vegdist(Pig.clean, method="bray", binary=FALSE, diag=FALSE, upper=FALSE, na.rm = FALSE) 
+ma.chclust <- chclust(ma.dist, method="coniss")
+# png(filename = "~/work/holzmaar/figs/Pigment_CONISS_plot2.png", width = 1200, height = 800, units = "px", pointsize = 12)
+
+polHZM.plot <- strat.plot(Pig.clean, yvar=y.scale, y.tks=y.scale,  ylim= c(11625, 15342), y.rev=TRUE, plot.line=FALSE, plot.poly=TRUE, plot.bar=TRUE, col.bar="black", #col.poly=p.col,
+col.poly.line="black", scale.percent=TRUE, xSpace=0.01, x.pc.inc=5, x.pc.lab=TRUE, x.pc.omit0=TRUE, srt.xlabel=45, las=2, col.exag="auto", exag.mult=3, exag.alpha=0.50, title="Holzmaar pigments LG Samples", ylabel="Sample", clust=ma.chclust)
+
+# Add cluster zones
+addClustZone(polHZM.plot, ma.chclust, nZone=5, lwd=1.5, lty=2, col="grey25")
+# # 
+# dev.off()
+```
+
+Save the clusters to your dataset
+
+```{r}
+#pigment data 
+cluster <- chclust(dist(data_standardized, method="euclidean"), method="coniss") 
+clustercut<-cbind(1:nrow(data_standardized),cutree(cluster,4)) 
+colnames(clustercut) <- c('orderCONISS','CONISScluster')
+df_clustered <- bind_cols(df_clustered, clustercut) 
+```
+
+Get the file with assigned clusters for further plotting
+
+```{r}
+# Get a table with the content of each cluster 
+#write.table(clustercut, "Pig_unconstrained_table_with_clusters_3.txt", sep="\t") # 
+# write.xlsx(HR_cluster_all, "data/HR_all_clustered.xlsx", rowNames = FALSE) 
+#low resolution
+write.xlsx(df_clustered, "../data/cleaned_PigOMug_clustered.xlsx", rowNames = FALSE, col_type ="numeric")
+```
+
+# Principle component analysis
+
+The next step in exploring our XRF data we perform principle component analysis to reduce the dimensionality of the dataset and to explore the correlation and variance of our variables. In the first step we aim to keep the covariance of the variables, this, we do not perform further data standardization (e.g., applying z-score normalization) as our data are already normalized via clr.
+
+Load the XRF data
+
+```{r}
+PCA_pig <- read_excel("../data/cleaned_PigOMug_clustered.xlsx")
+
+data <- select(PCA_pig, 3:22)
+```
+
+## ALR: Transforming pigment data - Additive log ratio
+
+As compositional data are unidirectional, means that they have values between 0 and infinite, for statistical operations, we first need to tranform the data. For this we use alr.
+
+In this way, we can then conduct PCA or clustering without worrying that our PCA axes will be affected by the unidirectional data character.
+
+```{r}
+# Function to replace zeros with half of minimum non-zero value
+replace_zeros <- function(x) {
+  min_value <- min(x[x != 0])  # Find minimum non-zero value
+  if (is.na(min_value)) min_value <- 0  # Handle case with all zeros
+  x[x == 0] <- min_value / 2  # Replace zeros with half of minimum
+  return(x)
+}
+
+# Apply the function to each column of the data frame - replacing 0es
+data <- as.data.frame(sapply(data, replace_zeros))
+```
+
+```{r}
+prep <- function(x) {
+  # Calculate the alr
+  norm <- x / (10^6 - x) # we uses 10^6 because our units are ug/g
+  # Normalize each value
+}
+
+prep_data <- as.data.frame(apply(data, 1, prep))
+trans_data <- as.data.frame(t(prep_data))
+alr <- log(trans_data)
+
+alr_safe<- bind_cols("depth" = PCA_pig$comp_depth_mm, "age" = PCA_pig$mean_VT22, alr)
+
+write.xlsx(alr_safe, "../data/pig_alr.xlsx", rowNames = FALSE, col_type ="numeric")
+```
+
+## Perform PCA - alr data
+
+We perform the PCA on the clr normalized dataset and display the percentage of explained variance by each of the PC axis.
+
+```{r}
+detach("package:factoextra", unload = TRUE)
+detach("package:FactoMineR", unload = TRUE)
+library("FactoMineR")
+library("factoextra")
+res.pca <- PCA(alr, graph = F, scale.unit = F)
+var <- get_pca_var(res.pca)
+get_eig(res.pca)
+
+
+png(filename = timestamp_filename("../figs", "LR_PCA-alr_explanatory_power"), width = 800, height = 500, units = "px", pointsize = 12)
+
+fviz_screeplot(res.pca, addlabels = TRUE, ylim = c(0, 65))
+
+dev.off()
+```
+
+We see that most of the data variance is explained by the first PC (55.3%) followed by the PC2 explaining 10.2% of the data variance. To be able to interpret our data and decrease the dimensionality by selection representative variable for a certain phenomenon or trend, we visualize the data in a bi-plot figure. We already added preliminary interpretations based on expert knowledge.
+
+### Plot PCA bi-plot
+
+-   Positively correlated variables are grouped together.
+
+-   Negatively correlated variables are positioned on opposite sides of the plot origin (opposed quadrants).
+
+-   The distance between variables and the origin measures the quality of the variables on the factor map. Variables that are away from the origin are well represented on the factor map.
+
+```{r}
+png(filename = timestamp_filename("../figs", "PCA_pig_PC1-2"), width = 800, height = 500, units = "px", pointsize = 12)
+
+# autochtonous <- text_grob(Autochtonous, size=13, face=bold, color= lightblue)
+# allochtonous <- text_grob(Allochtonous, size=13, face=bold, color= lightblue)
+# Organic <- text_grob(Organic matter\nand redox, size=13, face=bold, color= grey,rot = 90)
+# Mineral <- text_grob(Minerals, size=13, face=bold, color= grey, rot=90)
+
+#PCA_clr <-
+  fviz_pca_var(res.pca, col.var="contrib", axes = c(1,2), 
+             ylim=c(-1,1), xlim = c(-0.7, 1.25), clip = ("off"),
+             gradient.cols = c("darkred", "orange", "forestgreen"),
+             repel = TRUE, title = " ")#+
+        #theme(plot.margin = unit(c(1,1,2,1), lines)) +
+          # annotation_custom(allochtonous,xmin=-0.4,xmax=-0.4,ymin=-0.7,ymax=-0.7) + 
+          # annotation_custom(autochtonous,xmin=0.7,xmax=0.7,ymin=-0.7,ymax=-0.7) +
+          # annotation_custom(Organic,xmin=-0.7, xmax=-0.7,ymin=0.4,ymax=0.4) + 
+          # annotation_custom(Mineral,xmin=-0.7,xmax=-0.7,ymin=-0.4,ymax=-0.4)
+  #coord_cartesian(clip = off)
+
+dev.off()
+```
+
+### Correlation of the variables with the principle components
+
+We can further explore the correlation of the variable with the PC axis to get better understanding of what variables are exploring each axis.
+
+```{r}
+corrplot(var$cor, is.corr=FALSE)
+```
+
+### Plot the variables contribution to PCx
+
+Further to statistically constrain/explore the contribution of the variable to the PC axis we plot the PC axis histograms.
+
+#### Contributions of variables to PC1
+
+```{r}
+png(filename = timestamp_filename("../figs", "pig_PCA-alr_PC1_exp"), width = 800, height = 500, units = "px", pointsize = 12)
+fviz_contrib(res.pca, choice = "var", axes = 1, top = 12)
+dev.off()
+```
+
+#### Contributions of variables to PC2
+
+```{r}
+png(filename = timestamp_filename("../figs", "pig_PCA-alr_PC2_exp"), width = 800, height = 500, units = "px", pointsize = 12)
+fviz_contrib(res.pca, choice = "var", axes = 2, top = 10)
+dev.off()
+```
+
+#### Contributions of variables to PC3
+
+```{r}
+png(filename = timestamp_filename("../figs", "pig_PCA-alr_PC3_exp"), width = 800, height = 500, units = "px", pointsize = 12)
+fviz_contrib(res.pca, choice ="var", axes = 3, top = 10)
+dev.off()
+```
+
+## PCA on alr and z-scored
+
+Even though our variables are unit less and were normalized in the way that they are ratios (clr), in the previous PCA we observe that certain variables are dominant compare to others. Thus, some of the relationships of the less represented variables are not clearly visible. To resolve this overpowering effect of the few dominant variables and the make the variables comparable, we scale the data using the z-score approach (standardizing by the standard deviation of the dataset).
+
+```{r}
+res.pca_scaled <- PCA(alr,  graph = FALSE, scale = 1) # in case one wants to scale the data using z-score
+varS<- get_pca_var(res.pca_scaled)
+get_eig(res.pca_scaled)
+png(filename = "pig_PCA_explanatory_power_alr_scored.png", width = 800, height = 500, units = "px", pointsize = 12)
+fviz_screeplot(res.pca_scaled, addlabels = TRUE, ylim = c(0, 55))
+dev.off()
+```
+
+We can see that the PC1 axis has now lower percentage of the explained variances (45.3%), which brought more explained variance to the PC2 (11.5). In this way we get more explanatory power on PC2 which means for us that we can identify more than the one dominant process explaining the data variance (as it was in the first PCA of non-scaled data). Thus, we get more explanatory PCA when z-scoring the data which helps to our data interpretation.
+
+### PCA on scaled data
+
+-   Positively correlated variables are grouped together.
+
+-   Negatively correlated variables are positioned on opposite sides of the plot origin (opposed quadrants).
+
+-   The distance between variables and the origin measures the quality of the variables on the factor map. Variables that are away from the origin are well represented on the factor map.
+
+```{r}
+# autochtonous <- text_grob(Autochtonous, size=13, face=bold, color= lightblue)
+# allochtonous <- text_grob(Allochtonous, size=13, face=bold, color= lightblue)
+# Organic <- text_grob(Organic matter\nand redox, size=13, face=bold, color= grey,rot = 90)
+# Mineral <- text_grob(Minerals, size=13, face=bold, color= grey, rot=90)
+
+#PCA_clr_scaled <- 
+#png(filename = timestamp_filename("../figs", "pig_PCA-alr_scaled_PC1-2"), width = 700, height = 500, units = "px", pointsize = 16)
+  fviz_pca_var(res.pca_scaled, label = "var", axes = c(2,3), 
+            gradient.cols = c("darkred", "orange", "forestgreen"), col.var="contrib",
+            repel = TRUE, title = "" )+
+   #theme(plot.margin = unit(c(0.1,8,0.1,2), "lines")) +
+          # annotation_custom(autochtonous,xmin=-.5,xmax=-0.5,ymin=-1,ymax=-1) + 
+          # annotation_custom(allochtonous,xmin=0.5,xmax=0.5,ymin=-1,ymax=-1) +
+          # annotation_custom(Organic,xmin=-1, xmax=-1,ymin=0.7,ymax=0.7) + 
+          # annotation_custom(Mineral,xmin=-1,xmax=-1,ymin=-0.5,ymax=-0.5)+
+  coord_cartesian(clip = "off")
+#dev.off()
+
+
+```
+
+### Correlation of the variables with the principle components - scaled
+
+```{r}
+corrplot(varS$cor, is.corr=FALSE)
+```
+
+### Plot the variables contribution to PCx
+
+#### Contributions of variables to PC1
+
+```{r}
+fviz_contrib(res.pca_scaled, choice = "var", axes = 1, top = 15)
+```
+
+#### Contributions of variables to PC2
+
+```{r}
+fviz_contrib(res.pca_scaled, choice = "var", axes = 2, top = 10)
+```
+
+#### Contributions of variables to PC3
+
+```{r}
+fviz_contrib(res.pca_scaled, choice = "var", axes = 3, top = 10)
+```
+
+## PCA on alr data with Pollen Zones
+
+For further data exploration and explanation we combine the results of clustering with the PCA bi-plots. In this way, we see what the important variables defining the specific lithotypes (the clusters).
+
+```{r}
+res.pca <- prcomp(alr, scale =F)
+#res.pca <- PCA(df, scale = 0)
+#var <- get_pca_var(res.pca)
+#get_eig(res.pca)
+
+# autochtonous <- text_grob(Autochtonous, size=13, face=bold, color= lightblue)
+# allochtonous <- text_grob(Allochtonous, size=13, face=bold, color= lightblue) 
+# Organic <- text_grob(Organic matter\nand redox, size=13, face=bold, color= grey,rot = 90) 
+# Mineral <- text_grob(Minerals, size=13, face=bold, color= grey, rot=90) 
+
+
+b_clr <- fviz_pca_biplot(res.pca, label="var", axes = c(1,3), repel = TRUE, 
+                     title =" " , col.var = "black", #xlab = PC1 (55.3%), ylab=PC2 (10.2%),
+                     alpha.var = 1, alpha.ind = 0.5, habillage=PCA_pig$PolZ,
+               addEllipses=TRUE, ellipse.level=0.95, ellipse.alpha = 0.2) +
+  labs(color = "Clusters", shape ="Clusters", fill = "Clusters")+
+  # annotation_custom(autochtonous,xmin=-3,xmax=-3,ymin=-4,ymax=-4) + 
+  # annotation_custom(allochtonous,xmin=3,xmax=3,ymin=-4,ymax=-4) + 
+  # annotation_custom(Organic,xmin=-5, xmax=-5,ymin=-2,ymax=-2) + 
+  # annotation_custom(Mineral,xmin=-5,xmax=-5,ymin=3,ymax=3)+
+  theme(plot.margin = unit(c(0.1,8,0.1,2), "lines"))#+
+   #coord_cartesian(xlim = c(-5, 5), ylim = c(-4, 4), clip = "off")
+
+
+
+png(filename = timestamp_filename("../figs", "pig_PCA-alr_PolZ_PC1-3"), width = 700, height = 500, units = "px", pointsize = 16)
+b_clr + scale_color_viridis_d(option ="H") + 
+  scale_fill_viridis_d(option = "H")+
+     theme_minimal()
+
+dev.off()
+```
+
+## PCA on alr z-scored data with Pollen Zones
+
+```{r}
+res.pca_scaled <- prcomp(alr, scale =T)
+
+# autochtonous <- text_grob(Autochtonous, size=13, face=bold, color= lightblue)
+# allochtonous <- text_grob(Allochtonous, size=13, face=bold, color= lightblue) 
+# Organic <- text_grob(Organic matter\nand redox, size=13, face=bold, color= grey,rot = 90) 
+# Mineral <- text_grob(Minerals, size=13, face=bold, color= grey, rot=90) 
+
+
+b_z <- fviz_pca_biplot(res.pca_scaled, label="var", axes = c(1,3), repel = TRUE, 
+                     title =" " , col.var = "black", #xlab = PC1 (45.3%), ylab=PC2 (11.5%),
+                     alpha.var = 1, alpha.ind = 0.5, habillage=PCA_pig$PolZ,
+               #cluster_CONISS, #K_means_cluster, Hcluster
+               addEllipses=TRUE, ellipse.level=0.95, ellipse.alpha = 0.2) +
+  labs(color = "Clusters", shape ="Clusters", fill = "Clusters")+
+  # annotation_custom(autochtonous,xmin=-5,xmax=-5,ymin=-6,ymax=-6) + 
+  # annotation_custom(allochtonous,xmin=5,xmax=5,ymin=-6,ymax=-6) + 
+  # annotation_custom(Organic,xmin=-8, xmax=-8,ymin=-4,ymax=-4) + 
+  # annotation_custom(Mineral,xmin=-8,xmax=-8,ymin=4,ymax=4)+
+  theme(plot.margin = unit(c(0.1,8,0.1,2), "lines"))#+
+  #coord_cartesian(xlim = c(-8, 8), ylim = c(-6, 6), clip = "off")
+
+
+png(filename = timestamp_filename("../figs", "pig_PCA-alr_scaled_PolZ_PC1-3"), width = 700, height = 500, units = "px", pointsize = 16)
+
+b_z + scale_color_viridis_d(option ="H") + 
+  scale_fill_viridis_d(option = "H")+
+     theme_minimal()
+
+dev.off()
+
+```
+
+Extracting the 4 PCs
+
+One the PCA axis are well explored and the phenomena responsible to the data variation are explained, the PCA axis can be used as the reduced dataset replacing the original variables when representing the given/selected phenomena. Thus, we extract the PC axis scores and save them along with our data for further plotting or data analysis.
+
+```{r}
+#summary(res.pca)
+res.pca <- prcomp(alr, scale. =T, rank. = 4) #center = T,
+summary(res.pca)
+```
+
+Attaching the PC scores to the dataset
+
+```{r}
+# Extract principal component scores (first two components)
+pc_scores <- res.pca$x  # Selects columns 1 and 2 for the first two PCs
+
+# Extract loadings for all principal components
+pc_loadings <- res.pca$rotation
+
+df_PC <- bind_cols(PCA_pig, pc_scores)
+
+write.xlsx(df_PC, "../data/Pig_clustered_PC.xlsx", rowNames = FALSE, col_type ="numeric")
+```
+
+## Trajectory plots
+
+The sedimentary data can be preceived as time-series data as the process of settlement is happening though time. Thus, while using the CONISS clustering, which groups the sediment data with respect to the depth/time variable, the PC axis can be used to plot the data and be able to track the chronological development of the variables represented by the PC scores. These plots are here called trajectory and they represent the evolution of the sediment composition though depth/time.
+
+```{r}
+df_PC <- read.xlsx("../data/Pig_clustered_PC.xlsx")
+depth_m <- as.data.frame(df_PC$comp_depth_mm)
+
+df_PC <- df_PC%>% mutate(PZn = case_when(PolZ == "Pleniglacial" ~ "1",
+                           PolZ == "Bølling" ~ "2",
+                           PolZ == "Allerød" ~ "3",
+                           PolZ == "YoungerDryas" ~ "4")
+   )
+```
+
+```{r}
+#plot(df_PC$PC1, df_PC$PC2, type= l, text = df_PC$comp_depth_mm)
+End <- df_PC %>% # last trading day
+  slice_max(df_PC$comp_depth_mm)
+ 
+Start <- df_PC %>% # first trading day
+  slice_min(df_PC$comp_depth_mm)
+  #slice(which.min(depth_m))
+
+
+s <- ggplot(df_PC, aes(PC1, PC3)) + 
+  geom_point(aes(colour = factor(PZn),  shape = factor(PZn), alpha = 0.3))+
+  labs(alpha = "Trajectory")+
+ #geom_line()
+  geom_path(alpha=0.3, col = "black", arrow = arrow(type = "closed", length = unit(0.25, "inches"), ends = "first")) +
+  labs(colour = "PZn", shape = "PZn") +
+# last trading day - round mark, annotation below
+  geom_point(data = Start, aes(x = PC1, y = PC3), col = "green", shape = 21, fill = "green", size = 2, stroke = 1.7) +
+  geom_text(data = Start, aes(x = PC1, y = PC3, label = sprintf("%0.0f", round(Start$comp_depth_mm, digits = 0))), size = 4, vjust = 2.5) +
+  # first trading day - round mark, annotation above
+  geom_point(data = End, aes(x = PC1, y = PC3), col = "red", shape = 21, fill = "red", size = 2, stroke = 1.7) +
+  geom_text(data = End, aes(x = PC1, y = PC3, label = sprintf("%0.0f", round(End$comp_depth_mm, digits = 0))), size = 4, face= "bold", vjust = -1.5)
+
+
+
+traj <- s + scale_color_brewer(palette="Dark2", labels = c("Pleniglacial", "Bølling-Allerød", "Allerød", "Younger Dryas"))+
+  scale_shape_discrete(labels = c("Pleniglacial", "Bølling-Allerød", "Allerød", "Younger Dryas")) +#Paired
+     theme_minimal()+
+  # annotation_custom(autochtonous,xmin=-4,xmax=-4,ymin=-6,ymax=-6) + 
+  # annotation_custom(allochtonous,xmin=5,xmax=5,ymin=-6,ymax=-6) + 
+  # annotation_custom(Organic,xmin=-7, xmax=-7,ymin=-3,ymax=-3) + 
+  # annotation_custom(Mineral,xmin=-7,xmax=-7,ymin=5,ymax=5)+
+ # theme(plot.margin = unit(c(0.1,8,0.1,2), lines))+
+  coord_cartesian(xlim = c(-10, 10), ylim = c(-8, 8), clip = "off")
+
+
+png(filename = "../figs/pig_trajectory_PC1-3.png", width = 680, height = 600, units = "px", pointsize = 14, res=120)
+traj
+dev.off()
+```
+
+PCAs are not really explanatory, thus we try to apply multidimensional scaling (MDS) instead and correlation matrix or heat maps can be better approach.
+
+# MDS
+
+```{r}
+mds_pig <- cmdscale(dist(alr), k=3)
+mds_df <- as.data.frame(mds_pig)
+df_PC <- bind_cols(df_PC, mds_df)
+```
+
+```{r}
+plot(mds_pig[, 1], mds_pig[, 2])
+points(mds_pig[, 1], mds_pig[, 2], pch =21, bg = df_PC$PZn)# here the color of the datapoints can be changed to show any of the made clusterings or the pollen zones
+```
+
+For the MSD visualization and interpretability, we use the pollen zones as the shape and color of our datapoints.
+
+```{r}
+png(filename = "../figs/pig_MDS_PolZ-1-3.png", width = 680, height = 600, units = "px", pointsize = 14, res=120)
+
+ggscatter(df_PC, x = "V1", y = "V3",
+          color = "PZn", shape = "PZn", fill = "PZn",
+          palette = "jco",
+          size = 3,
+          ellipse = TRUE,
+          ellipse.type = "convex",
+          title = " ",
+          xlab = "MDS Dimension 1",
+          ylab = "MDS Dimension 3") +
+    labs(color = "Pollen Zones", shape ="Pollen Zones", fill = "Pollen Zones") +
+  scale_color_discrete(name = 'Pollen Zones', labels = c("Pleniglacial","Bølling","Allerød","Younder Dryas"))+
+  scale_fill_discrete(name = 'Pollen Zones', labels = c("Pleniglacial","Bølling","Allerød","Younder Dryas"))+
+  scale_shape_discrete(name = 'Pollen Zones', labels = c("Pleniglacial","Bølling","Allerød","Younder Dryas"))
+  #geom_text_repel(aes(label = species), box.padding = 0.5)
+
+dev.off()
+```
+
+The MDS showed us that the Pleniglacial data are different than the Bölling-Alleröd and Younger Dryas data. Likely we don't have sufficent number of data in the Younger Dryas to see whether the lake pigment composition returns to the same communities as in the Pleniglacial.
+
+```{r}
+# colors <- c("red", "blue", "pink")
+# colors <- colors[as.numeric(df_PC$PZn)]
+# scatterplot3d(mds_pig[,1:3], pch = 16,
+#               xlab = "",
+#               ylab = "",
+#               zlab = "",
+#               color=colors)
+```
+
+# Non-metric multidimensional scaling (NMDS)
+
+Non-metric Multidimensional Scaling (NMDS) is a great tool for ecologists to understand community assemblages and identify their influencing factors. We use a data frame/matrix with relative abundances of different pigments in different time periods. Each pigment abundance in the time is an axis and each axis is a dimension. NMDS summarise all of that information into a 2-dimensional representation, showing the differences in pigment community composition. It tries to represent the original position of a community within a multidimensional space as accurately as possible while also minimising the number of dimensions to easily plot and visualise.
+
+## Relative abundance of pigments (%)
+
+Converting the absolute concentrations of pigments to relative %.
+
+```{r}
+community <- df_PC[,2:22]
+commper <- adorn_percentages(community, denominator = "row", na.rm = TRUE, 2:21)
+comPer <- commper[2:21]*100
+```
+
+Transforming the data frame into a matrix and performing the NMDS.
+
+```{r}
+
+ComMatrix <- as.matrix(comPer)
+
+inv.NMDS <- metaMDS(ComMatrix, distance = "bray", k = 3, autotransform = TRUE, trymax=100)
+
+# check stress value
+inv.NMDS$stress # ideally stress value is < 0.2
+
+plot(inv.NMDS)
+
+#ordiplot(inv.NMDS, type = "n") # create blank ordination plot
+orditorp(inv.NMDS, display = "species", col="red", air = 0.4) # add species (orders in this case) names in red
+orditorp(inv.NMDS, display = "sites", cex = 1.25, air = 0.4) # add site numbers in black
+```
+
+The result plot shows 2 dimensions and each dot represents a different sample in time and each cross represents pigment. The closer 2 points are, the more similar those communities are in terms of composition.
+
+```{r}
+#png("~/work/holzmaar/figs/NMDS.png", width=6, height=5, units = "in", res = 300)
+ordiplot(inv.NMDS) # plot shows communities (circles) and species (crosses)
+orditorp(inv.NMDS, display = "species", col="red", air = 0.4)
+orditorp(inv.NMDS, display = "sites", cex = 0.7, air = 0.4)
+ordiellipse(inv.NMDS, df_PC$PZn, label = FALSE,
+            col=c("dodgerblue", "tomato2", "tomato4", "deepskyblue"),
+            draw = "polygon", alpha=120) # adding ellipses to the plot, grouping by distance (inverts$Distance)
+legend("bottomleft", title="Pollen Zone", c("Pleniglacial","Bølling","Allerød","Younger Dryas"), 
+       fill=c("dodgerblue", "tomato2", "tomato4",
+                                   "deepskyblue"), horiz=FALSE, cex=.9) # adding a legend
+#dev.off()
+```
+
+```{r}
+nmds.scores <- as.data.frame(scores(inv.NMDS)$sites)
+
+nmds.scores <- nmds.scores %>%
+  mutate(Time = as.factor(df_PC$PZn))
+
+png(filename = "../figs/pig_NMDS_1-3.png", width = 680, height = 600, units = "px", pointsize = 14, res=120)
+# create ggplot
+(inv_NMDS_plot <- ggplot(data = nmds.scores, aes(NMDS1, NMDS3)) +
+# adding different colours and shapes for points at different distances
+    geom_point(aes(color = Time, shape = Time)) + 
+# adding covariance ellipses according to distance # use size argument if ggplot2 < v. 3.4.0
+   # geom_path(data=nmds.scores, aes(x=NMDS1, y=NMDS2, colour=Time), linewidth=1) + 
+# removes lines from legend
+    guides(color = guide_legend(override.aes = list(linetype=c(NA,NA,NA,NA)))) +
+    theme_bw() + 
+    theme(panel.grid = element_blank()) +
+# legend title
+    scale_color_manual(name = "Pollen Zone", 
+    # adjusting legend labels and colour
+            labels = c("Pleniglacial","Bølling","Allerød","Younger Dryas"), 
+            values = c("dodgerblue", "tomato2", "tomato4", "deepskyblue")) + 
+    scale_shape_manual("Pollen Zone", 
+            labels = c("Pleniglacial","Bølling","Allerød","Younger Dryas"), 
+            values = c(17, 15, 3, 7))) # customising shapes
+# save plot
+#ggsave(filename = "~/work/holzmaar/figs/NMDSPaths.png", inv_NMDS_plot, device = "png")
+
+dev.off()
+```
+
+Similarly to the MDS, we get information about the big difference of the Pleniglacial communities compared to the rest of the Late-Glacial periods.
+
+# Correlation based heatmaps
+
+To best present the pigment data, we need to decrees their dimensionality. We tried to use PCA, where we saw groups of pigments representing the community composition, but to visualize these communities on a time axis, we opt for correlation based heat maps.
+
+```{r}
+pig_prod <- read_excel("../data/SourceData/pig_prod.xlsx", sheet = "50%0")
+#heet = "90%0T")
+pig_prod_df <- as.data.frame(pig_prod)
+rownames(pig_prod_df) <- pig_prod_df[,2]
+pig_prod_df
+
+col_names <- pig_prod_df[,2]
+```
+
+In case the scirpt starts here, we load all the data from the code above
+
+```{r}
+df_PC <- read.xlsx("../data/Pig_clustered_PC.xlsx")
+depth_m <- as.data.frame(df_PC$comp_depth_mm)
+
+df_PC <- df_PC%>% mutate(PZn = case_when(PolZ == "Pleniglacial" ~ "1",
+                           PolZ == "Bølling" ~ "2",
+                           PolZ == "Allerød" ~ "3",
+                           PolZ == "YoungerDryas" ~ "4")
+   )
+```
+
+```{r}
+alr_safe <- read.xlsx("../data/pig_alr.xlsx")
+```
+
+```{r}
+pig_prod_df <- pig_prod_df[,-1]
+annotation_col = pig_prod_df[2]
+```
+
+```{r}
+depth_mat <- as.data.frame(select(df_PC,1, 23, 2))
+
+rownames(depth_mat) <- depth_mat[,1]
+depth_mat <- depth_mat[,-1]
+annotation_row = depth_mat[1]
+```
+
+```{r}
+new_names <- alr_safe[,1]
+
+alr_mat <- as.matrix(alr_safe[,3:22])
+rownames(alr_mat) <- new_names
+colnames(alr_mat) <- col_names
+
+alr_scaled<- scale(alr_mat)
+
+Pig.clean_ID <- as.matrix(Pig.clean)
+rownames(Pig.clean_ID) <- new_names
+colnames(Pig.clean_ID) <- col_names
+```
+
+```{r}
+ann_colors = list(
+   producer = c(Cryptophytes = "darkorange3", Cyanobacteria ="royalblue2", `Green algae` = "green4", `Green sulphur bacteria` = "greenyellow", `Purple non-sulphur bacteria`= "orchid2", `Purple sulphur bacteria` = "purple2", `Red blooming algae` = "red4", Silicifiers= "lightskyblue"),
+    PolZ = c(Pleniglacial = "dodgerblue", Bølling = "tomato2", Allerød = "tomato4", `YoungerDryas` = "deepskyblue")) #`Lachersee tephra` = "gray29"
+  #  GeneClass = c(Path1 = "#7570B3", Path2 = "#E7298A", Path3 = "#66A61E")
+# , 
+
+#Both dimension clustering
+#png(filename = "~/work/holzmaar/figs/heatmap_corr_clustered_50_3percent.png", width = 1200, height = 1000, units = "px", pointsize = 18)
+pheatmap(alr_scaled, show_rownames=T,show_colnames=T,
+         annotation_col= annotation_col, annotation_row = annotation_row,
+         annotation_colors = ann_colors,
+         scale = "none",clustering_method="ward.D2", #cluster_rows = F,
+         clustering_distance_cols="correlation", clustering_distance_rows = "euclidean",
+         cutree_rows = 3,
+         cutree_cols = 4, treeheight_row = 50,
+         treeheight_col = 50, color = colorRampPalette(c("lightskyblue1","darkseagreen1","lightgreen","yellow", "orange", "red", "purple"))(15))
+#dev.off()
+
+
+# Only pigment clustering
+
+obj <- pheatmap(alr_scaled, show_rownames=T,show_colnames=T,
+         annotation_col=annotation_col, annotation_row = annotation_row,
+         annotation_colors = ann_colors,
+         fontsize = 24,
+         fontsize_row = 10,
+        #cellheight = 8, cellwidth = 20,
+         scale = "none", #clustering_method="ward.D2",
+         cluster_rows = F,
+         clustering_distance_cols="euclidean", #clustering_distance_rows = "euclidean",
+        # cutree_rows = 5,
+         cutree_cols = 3, #treeheight_row = 50,
+         treeheight_col = 50, color = colorRampPalette(c("lightskyblue1","darkseagreen1","lightgreen","yellow", "orange", "red", "purple"))(15))
+
+png(filename = timestamp_filename("../figs", "SuppFigure3_heatmap_corr_50_3percent"), width = 1600, height = 1000, units = "px", pointsize = 24)
+obj
+dev.off()
+
+
+
+```
+
+Extract the clusters, make mean curve and use for a line plot
+
+```{r}
+obj$tree_row
+obj$tree_col
+PigClust <- cutree(obj$tree_col, k = 3) #fill in the number of observations (rows) and number of clusters acooriding to the dendrogram 
+# df_clustered <- bind_cols(df_clustered, clustercut) 
+# colnames(df_clustered)[29] <- 'order' # change the column number based on your dataset size 
+# colnames(df_clustered)[30] <- 'Hcluster' # change the column number based on your dataset size
+
+PigClust <- as.data.frame(t(PigClust))
+
+alr_scaled <- as.data.frame(alr_scaled)
+alr_scaledB<- rbind("PigClust" = PigClust , alr_scaled)
+```
+
+```{r}
+df1 <- as.data.frame(t(alr_scaledB))
+
+selection1 <- as.data.frame(t(df1[df1$PigClust == "1", ]))
+selection2 <- as.data.frame(t(df1[df1$PigClust == "2", ]))
+selection3 <- as.data.frame(t(df1[df1$PigClust == "3", ]))
+```
+
+```{r}
+alr_scaled$C1 <- rowMeans(selection1[2:95,])
+alr_scaled$C2 <- rowMeans(selection2[2:95,])
+alr_scaled$C3 <- rowMeans(selection3[2:95,])
+
+
+alr_scaled_clust<- bind_cols("depth" = PCA_pig$comp_depth_mm, "age" = PCA_pig$mean_VT22, alr_scaled)
+
+write.xlsx(alr_scaled_clust, "../data/pig_alr_clust.xlsx", rowNames = FALSE, col_type ="numeric")
+```
+
+# Figure 2
+
+```{r}
+Pig_da.clean$TChl <- rowSums(Pig_da.clean[,20:22])
+Pig_da.clean$Cyanos <- rowSums(Pig_da.clean[,11:13])
+
+PollenZ <- select(Pig_da.clean, 1, 2, 23)
+
+PollenZ <- PollenZ %>% mutate(color= case_when(PolZ == "Pleniglacial" ~ "blue",
+                           PolZ == "Bølling" ~ "red",
+                           PolZ == "Allerød" ~ "red", 
+                          PolZ == "LST" ~ "lightgray", 
+                           PolZ == "YoungerDryas" ~ "blue")
+   )
+
+PollenZ <- PollenZ %>% mutate(line= case_when(PolZ == "Pleniglacial" ~ "solid",
+                           PolZ == "Bølling" ~ "solid",
+                           PolZ == "Allerød" ~ "solid", 
+                          PolZ == "LST" ~ "solid", 
+                           PolZ == "YoungerDryas" ~ "solid")
+   )
+
+PollenZ <- PollenZ %>% mutate(aplha= case_when(PolZ == "Pleniglacial" ~ "0.8",
+                           PolZ == "Bølling" ~ "0.8",
+                           PolZ == "Allerød" ~ "0.8", 
+                          PolZ == "LST" ~ "0.2", 
+                           PolZ == "YoungerDryas" ~ "0.8")
+   )
+```
+
+## High-resolution data
+
+```{r}
+HSI_data <- read_excel("../data/HZM_HR_cleaned.xlsx", col_types = "numeric")
+
+PollenZ <- data.frame("age" = c(15342, 14444, 13611, 13011, 12727, 11625), "zone" = c("Pleniglacial", "Bølling", "Allerød", "LST", "Younger Dryas", ""))
+PollenZ <- LOOKUP(PollenZ, c("age"), HSI_data, c("mean_VT22"), "depth_VT22")
+PollenZ$depth <- PollenZ$depth_VT22/1000
+
+PollenZ <- PollenZ %>% mutate(color= case_when(zone == "Pleniglacial" ~ "blue",
+                           zone == "Bølling" ~ "red",
+                           zone == "Allerød" ~ "red", 
+                          zone == "LST" ~ "lightgray", 
+                           zone == "Younger Dryas" ~ "blue")
+   )
+
+PollenZ <- PollenZ %>% mutate(line= case_when(zone == "Pleniglacial" ~ "solid",
+                           zone == "Bølling" ~ "solid",
+                           zone == "Allerød" ~ "solid", 
+                          zone == "LST" ~ "solid", 
+                           zone == "Younger Dryas" ~ "solid")
+   )
+
+PollenZ <- PollenZ %>% mutate(aplha= case_when(zone == "Pleniglacial" ~ "0.8",
+                           zone == "Bølling" ~ "0.8",
+                           zone == "Allerød" ~ "0.8", 
+                          zone == "LST" ~ "0.2", 
+                           zone == "Younger Dryas" ~ "0.8")
+   )
+```
+
+```{r}
+limYmin = min(HSI_data$mean_VT22) #HSI_data$depth_VT22
+limYmax = max(HSI_data$mean_VT22) #HSI_data$depth_VT22
+
+RABD620 <- ggplot()+
+  geom_hline(data= PollenZPig, yintercept = PollenZPig$age,#depth_VT22, 
+             linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  # geom_hline(yintercept = PollenZ$age, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
+   geom_vline(xintercept=mean(HSI_data$RABD620), color="dodgerblue1", linetype = 1) +
+  geom_vline(xintercept=mean(HSI_data$RABD620) + sd(HSI_data$RABD620), color="gray", linetype = 2) +
+  geom_vline(xintercept=mean(HSI_data$RABD620) - sd(HSI_data$RABD620), color="gray", linetype = 2) +
+  geom_point(data= HSI_data, aes(y=mean_VT22, x= RABD620), colour = "dodgerblue1", size= 0.5)+
+  geom_path(data = HSI_data, aes(y=mean_VT22, x= RABD620), alpha=.8, size=1.5, colour = "dodgerblue1") +
+  #   annotate("text", x= 1.01, y= 15050 , label = "Pleniglacial", color= "blue")+ #x= 13700
+  # annotate("text", x= 1.00, y= 14150, label = "Bølling", color= "darkred")+ #x= 12800
+  # annotate("text", x= 1.00, y= 13550, label = "Allerød", color= "darkred")+ #x= 12.100
+  # annotate("text", x= 1.01, y=12990, label = "Lachersee tephra", color= "black", size = 3)+ #x= 11600
+  # annotate("text", x= 1.007, y= 12250, label = "Younger Dryas", color= "blue")+ #x= 11100
+  scale_y_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_x_continuous(position = "bottom", expand=c(0,0))+
+  labs(title = " ", x = "RABD620\n(Phycocyanin)", y = "Age (Cal yr BP)" )+#y = " Depth (mm) ") +
+  theme_classic() +
+  theme(legend.position="none", axis.title.x.bottom = element_text(color = "dodgerblue1"), axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,1), "cm"), panel.background = element_blank())#axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), )
+
+RABD660 <- ggplot()+
+  geom_hline(data= PollenZPig, yintercept = PollenZPig$age,#depth_VT22, 
+             linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  # geom_hline(yintercept = PollenZ$age, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
+  geom_point(data= HSI_data, aes(y=mean_VT22, x= RABD670calib), colour = "limegreen", size= 0.5)+
+  geom_path(data = HSI_data, aes(y=mean_VT22, x= RABD670calib), alpha=.8, size=1.5, colour = "limegreen") +
+  scale_y_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_x_continuous(position = "top", expand=c(0,0))+
+  labs(title = " ", x = "Total chlorophylls\n(µg/g wet sed)", y = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.title.x.top = element_text(color = "limegreen"), axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),plot.margin = unit(c(0,0,0.5,-0.6), "cm"),axis.text = element_text(size = 12), panel.background = element_blank())
+
+RABD845 <- ggplot()+
+    geom_hline(data= PollenZPig, yintercept = PollenZPig$age,#depth_VT22, 
+             linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  # geom_hline(yintercept = PollenZ$age, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
+  geom_point(data= HSI_data, aes(y=mean_VT22, x= RABD845calib), colour = "violet", size= 0.5)+
+  geom_path(data = HSI_data, aes(y=mean_VT22, x= RABD845calib), alpha=.8, size=1.5, colour = "violet") +
+  scale_y_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_x_continuous(position = "bottom", expand=c(0,0))+
+  labs(title = " ", x = "Bacteriopheophytin a\n(µg/g wet sed)", y = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.title.x.bottom = element_text(color = "violet"), axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),plot.margin = unit(c(0,0,0.5,-1), "cm"),axis.text = element_text(size = 12), panel.background = element_blank())
+```
+
+```{r}
+HIPlot <- plot_grid(RABD620,
+                    RABD660, 
+                    RABD845,
+  nrow = 1, align = "h", #scale = c(0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 1, 1)) 
+          rel_widths = c(1,1,1), axis = "tb" )
+#dev.off()
+
+png(filename = timestamp_filename("../figs", "HSIPlot"), width = 877, height = 620, units = "px", pointsize = 18, res=72)
+HIPlot
+dev.off()
+```
+
+### Combined, overlay plots
+
+```{r}
+Chlfs <- ggplot()+
+  annotate("text", y= 580, x= 15050 , label = "Pleniglacial", color= "blue")+ #x= 13700
+  annotate("text", y= 600, x= 14150, label = "Bølling", color= "darkred")+ #x= 12800
+  annotate("text", y= 600, x= 13550, label = "Allerød", color= "darkred")+ #x= 12.100
+  annotate("text", y= 520, x=12990, label = "Lachersee tephra", color= "black", size = 3)+ #x= 11600
+  annotate("text", y= 500, x= 12550, label = "Younger Dryas", color= "blue")+ #x= 11100
+  geom_col(data = Pig_da.clean, aes(x=Pig_da.clean$mean_VT22, #Pig_da.clean$comp_depth_mm,
+                                    y =Pig_da.clean$TChl), width = 20, stat = "identity", alpha = 0.6, fill = "palegreen4")+
+  geom_point(data = HSI_data, aes(x=mean_VT22, #depth_VT22,
+                                  y= RABD670calib*10), colour = "springgreen3", size= 0.01) +
+  geom_path(data = HSI_data, aes(x= mean_VT22, #depth_VT22,
+                                 y= RABD670calib*10), alpha=.5, size=0.2, colour = "springgreen3") +
+  geom_vline(data= PollenZ, xintercept = PollenZ$age, #depth_VT,
+             linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
+  coord_flip()+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0), name = "Age (Cal yr BP)") +
+  scale_y_continuous(position = "right", expand=c(0,0), sec.axis = sec_axis(~ . /10, name = "Total chlorophylls\n(µg/g wet sed)"))+
+  labs(title = " ", y = " Total chlorophylls\n(µg/g OM)", x = " ") +
+  theme_classic() +
+  theme(legend.position="none", #, axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank()) axis.text.y = element_blank(), 
+        axis.title.x.bottom = element_text(color = "springgreen3"),  axis.title.x.top = element_text(color = "palegreen4"))
+
+
+Bphe <- ggplot()+
+  geom_vline(xintercept = PollenZ$age, #depth_VT,
+             linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
+  geom_col(data = Pig_da.clean, aes(x=Pig_da.clean$mean_VT22, #Pig_da.clean$comp_depth_mm,
+                                    y =Pig_da.clean$Okenone), width = 20, stat = "identity", alpha = 0.6, fill = "purple3")+
+  geom_point(data = HSI_data, aes(x=mean_VT22, #depth_VT22
+                                  y= RABD845calib*10), colour = "deeppink", size= 0.01) +
+  geom_path(data = HSI_data, aes(x= mean_VT22, #depth_VT22
+                                 y= RABD845calib*10), alpha=.5, size=0.2, colour = "deeppink") +
+  coord_flip()+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_y_continuous(position = "right", expand=c(0,0), sec.axis = sec_axis(~ . /10, name = "Bacteriophyophytin a\n(µg/g wet sed)"))+
+  labs(title = " ", y = "Okenone\n(µg/g OM)", x = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "deeppink"),  axis.title.x.top = element_text(color = "purple3"))
+  
+  # annotate("text", x= 1.015, y= 13.7, label = "Pleniglacial", color= "blue")+
+  # annotate("text", x= 1.015, y= 12.8, label = "Bølling", color= "darkred")+
+  # annotate("text", x= 1.015, y= 12.1, label = "Allerød", color= "darkred")+
+  # annotate("text", x= 1.015, y= 11.6, label = "Lachersee tephra", color= "black")+
+  # annotate("text", x= 1.015, y= 11.1, label = "Younger Dryas", color= "blue")+
+
+Cyano <- ggplot()+
+ # geom_text(aes(max(RABD620),PollenZ$depth,label = PollenZ$depth, vjust = -1))+
+  geom_vline(xintercept = PollenZ$age, #depth_VT, 
+             linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
+  geom_hline(yintercept=mean(HSI_data$RABD620), color="dodgerblue1", linetype = 1) +
+  geom_hline(yintercept=mean(HSI_data$RABD620) + sd(HSI_data$RABD620), color="gray", linetype = 2) +
+  geom_hline(yintercept=mean(HSI_data$RABD620) - sd(HSI_data$RABD620), color="gray", linetype = 2) +
+  geom_point(data= HSI_data, aes(x= mean_VT22, #depth_VT22
+                                  y= RABD620), colour = "dodgerblue1", size= 0.01)+
+  geom_path(data = HSI_data, aes(x= mean_VT22, #depth_VT22
+                                 y= RABD620), alpha=.8, size=0.2, colour = "dodgerblue1") +
+  coord_flip()+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_y_continuous(position = "left", expand=c(0,0))+
+  labs(title = " ", y = "RABD620\n(Phycocyanin)", x = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "dodgerblue1"))
+
+```
+
+```{r}
+Combo <- plot_grid(Chlfs, Bphe, Cyano, 
+  nrow = 1, align = "h", #scale = c(0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 1, 1)) 
+          rel_widths = c(1,1,1), axis = "tb" )
+
+
+png(filename = timestamp_filename("../figs", "ComboHSI"), width = 877, height = 620, units = "px", pointsize = 18, res=72)
+Combo
+dev.off()
+```
+
+## Pigment selection
+
+```{r}
+
+TChls <- ggplot()+
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age,#depth_VT22, 
+             linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  geom_col(data = Pig_da.clean, aes(x=Pig_da.clean$mean_VT22, #comp_depth_mm, 
+                                    y =Pig_da.clean$TChl), width = 25, stat = "identity", alpha = 0.4, fill = "springgreen3")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_y_continuous(position = "left", expand=c(0,0))+
+ # geom_path(data=Pig_da.clean, aes(y=TChl, x= comp_depth_mm), alpha=.8, size=0.2, colour = "green3") +
+  labs(title = " ", y = "Total chlorophylls\n(µg/g OM) \n Green algae", x = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+  axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "springgreen3"))+
+  # annotate("text", y= 600, x= 13700, label = "Pleniglacial", color= "blue")+
+  # annotate("text", y= 600, x= 12800, label = "Bølling", color= "darkred")+
+  # annotate("text", y= 600, x= 12.100, label = "Allerød", color= "darkred")+
+  # annotate("text", y= 600, x= 11600, label = "Lachersee tephra", color= "black", size = 3)+
+  # annotate("text", y= 600, x= 11100, label = "Younger Dryas", color= "blue")+
+  coord_flip()+ 
+  theme(legend.position="none", plot.margin = unit(c(0,0,0.5,-0.65), "cm"), axis.text = element_text(size = 12), panel.background = element_blank())
+  # theme_classic() +
+  # theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+
+# Oke <- ggplot()+
+#   geom_hline(yintercept = PollenZ$depth_VT22, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
+#   geom_point(data=Pig_da.clean, aes(x=Pig_da.clean$Okenone, y=comp_depth_mm), colour = "purple", size= 0.01)+
+#   scale_y_reverse(limits = c(13822, 10989), breaks = round(seq(10989, 13822, by = 100), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
+#   scale_x_continuous(position = "bottom", expand=c(0,0))+
+#  geom_path(data=Pig_da.clean, aes(x=Okenone, y= comp_depth_mm), alpha=.8, size=0.2, colour = "purple") +
+#   labs(title = " ", x = "Okenone \n(µg/g OM)", y = " ") +
+#   annotate("text", x= 1.01, y= 13.7, label = "Pleniglacial", color= "blue")+
+#   annotate("text", x= 1, y= 12.8, label = "Bølling", color= "darkred")+
+#   annotate("text", x= 1, y= 12.1, label = "Allerød", color= "darkred")+
+#   annotate("text", x= 1.005, y= 11.6, label = "Lachersee tephra", color= "black", size = 3)+
+#   annotate("text", x= 1.01, y= 11.1, label = "Younger Dryas", color= "blue")+
+#   theme_classic() +
+#   theme(legend.position="none")
+#   # theme_classic() +
+#   # theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+
+Oke <- ggplot()+
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age,#depth_VT22 , 
+             linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  geom_col(data = Pig_da.clean, aes(x=Pig_da.clean$mean_VT22, #comp_depth_mm, 
+                                      y =Pig_da.clean$Okenone), width = 25, stat = "identity", alpha = 0.4, fill = "maroon4")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
+  scale_y_continuous(position = "right", expand=c(0,0))+
+ # geom_path(data=Pig_da.clean, aes(y=Okenone, x= comp_depth_mm), alpha=.8, size=0.2, colour = "green3") +
+  labs(title = " ", y = "Okenone\n(µg/g OM) \n Anoxic bacteria (PSB)", x = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+  axis.text.y = element_blank(), axis.title.x.top = element_text(color = "maroon4"))+
+  # annotate("text", y= 600, x= 13700, label = "Pleniglacial", color= "blue")+
+  # annotate("text", y= 600, x= 12800, label = "Bølling", color= "darkred")+
+  # annotate("text", y= 600, x= 12.100, label = "Allerød", color= "darkred")+
+  # annotate("text", y= 600, x= 11600, label = "Lachersee tephra", color= "black", size = 3)+
+  # annotate("text", y= 600, x= 11100, label = "Younger Dryas", color= "blue")+
+  coord_flip()+ 
+  theme(legend.position="none", plot.margin = unit(c(0,0,0.5,-1), "cm"), axis.text = element_text(size = 12), panel.background = element_blank())
+
+
+Fuco <- ggplot()+
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age,#depth_VT22 ,
+             linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  geom_col(data = Pig_da.clean, aes(x=Pig_da.clean$mean_VT22, #comp_depth_mm, 
+                                    y =Pig_da.clean$Fuco), width = 25, stat = "identity", alpha = 0.4, fill = "darkorange3")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_y_continuous(position = "left", expand=c(0,0))+
+ # geom_path(data=Pig_da.clean, aes(y=Okenone, x= comp_depth_mm), alpha=.8, size=0.2, colour = "green3") +
+  labs(title = " ", y = "Fucoxanthin\n(µg/g OM)\n Diatoms ", x = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+  axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "darkorange3"))+
+  # annotate("text", y= 600, x= 13700, label = "Pleniglacial", color= "blue")+
+  # annotate("text", y= 600, x= 12800, label = "Bølling", color= "darkred")+
+  # annotate("text", y= 600, x= 12.100, label = "Allerød", color= "darkred")+
+  # annotate("text", y= 600, x= 11600, label = "Lachersee tephra", color= "black", size = 3)+
+  # annotate("text", y= 600, x= 11100, label = "Younger Dryas", color= "blue")+
+  coord_flip()+ 
+  theme(legend.position="none", plot.margin = unit(c(0,0,0.5,-0.62), "cm"), axis.text = element_text(size = 12), panel.background = element_blank())
+
+
+Cyanos <- ggplot()+
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age,#depth_VT22 ,
+             linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  geom_col(data = Pig_da.clean, aes(x=Pig_da.clean$mean_VT22, #comp_depth_mm, 
+                                    y =Pig_da.clean$Cyanos), width = 25, stat = "identity", alpha = 0.4, fill = "lightseagreen")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
+  scale_y_continuous(position = "right", expand=c(0,0))+
+ # geom_path(data=Pig_da.clean, aes(y=Okenone, x= comp_depth_mm), alpha=.8, size=0.2, colour = "green3") +
+  labs(title = " ", y = "Echi+Cantha+Zea\n(µg/g OM) \n Cynobacteria", x = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+  axis.text.y = element_blank(), axis.title.x.top = element_text(color = "lightseagreen"))+
+  # annotate("text", y= 600, x= 13700, label = "Pleniglacial", color= "blue")+
+  # annotate("text", y= 600, x= 12800, label = "Bølling", color= "darkred")+
+  # annotate("text", y= 600, x= 12.100, label = "Allerød", color= "darkred")+
+  # annotate("text", y= 600, x= 11600, label = "Lachersee tephra", color= "black", size = 3)+
+  # annotate("text", y= 600, x= 11100, label = "Younger Dryas", color= "blue")+
+  coord_flip()+ 
+  theme(legend.position="none", plot.margin = unit(c(0,0,0.5,-.5), "cm"),axis.text = element_text(size = 12), panel.background = element_blank())
+
+```
+
+#### Pigment communities
+
+```{r}
+PigCom1 <- ggplot()+
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age,#depth_VT22 ,
+             linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  # geom_col(data = alr_scaled_clust, aes(x=alr_scaled_clust$depth, y = alr_scaled_clust$C1), width = 25, stat = "identity", alpha = 0.4, fill = "royalblue1")+
+  geom_path(data = alr_scaled_clust, aes(x=age, y= C1), alpha=1, size=1.5, colour = "royalblue1") +
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
+  scale_y_continuous(position = "right", expand=c(0,0))+
+ # geom_path(data=Pig_da.clean, aes(y=Okenone, x= comp_depth_mm), alpha=.8, size=0.2, colour = "green3") +
+  labs(title = " ", y = "Pigment community 1\n Pioneers \n relative abundance", x = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+  axis.text.y = element_blank(), axis.title.x.top = element_text(color = "royalblue1"))+
+  # annotate("text", y= 600, x= 13700, label = "Pleniglacial", color= "blue")+
+  # annotate("text", y= 600, x= 12800, label = "Bølling", color= "darkred")+
+  # annotate("text", y= 600, x= 12.100, label = "Allerød", color= "darkred")+
+  # annotate("text", y= 600, x= 11600, label = "Lachersee tephra", color= "black", size = 3)+
+  # annotate("text", y= 600, x= 11100, label = "Younger Dryas", color= "blue")+
+  coord_flip()+ 
+  theme(legend.position="none", plot.margin = unit(c(0,0,0.5,-1), "cm"),axis.text = element_text(size = 12),panel.background = element_blank())
+
+PigCom3 <- ggplot()+
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age,#depth_VT22 ,
+             linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  # geom_col(data = alr_scaled_clust, aes(x=alr_scaled_clust$depth, y = alr_scaled_clust$C1), width = 25, stat = "identity", alpha = 0.4, fill = "royalblue1")+
+  geom_path(data = alr_scaled_clust, aes(x=age, y= C3), alpha=1, size=1.5, colour = "royalblue3") +
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_y_continuous(position = "left", expand=c(0,0))+
+ # geom_path(data=Pig_da.clean, aes(y=Okenone, x= comp_depth_mm), alpha=.8, size=0.2, colour = "green3") +
+  labs(title = " ", y = "Pigment community 2\n Secondary colonisers \n relative abundance", x = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+  axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "royalblue3"))+
+  # annotate("text", y= 600, x= 13700, label = "Pleniglacial", color= "blue")+
+  # annotate("text", y= 600, x= 12800, label = "Bølling", color= "darkred")+
+  # annotate("text", y= 600, x= 12.100, label = "Allerød", color= "darkred")+
+  # annotate("text", y= 600, x= 11600, label = "Lachersee tephra", color= "black", size = 3)+
+  # annotate("text", y= 600, x= 11100, label = "Younger Dryas", color= "blue")+
+  coord_flip()+ 
+  theme(legend.position="none", plot.margin = unit(c(0,0,0.5,-.9), "cm"),axis.text = element_text(size = 12), panel.background = element_blank())
+
+PigCom2 <- ggplot()+
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age,#depth_VT22 , 
+             linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  # geom_col(data = alr_scaled_clust, aes(x=alr_scaled_clust$depth, y = alr_scaled_clust$C1), width = 25, stat = "identity", alpha = 0.4, fill = "royalblue1")+
+  geom_path(data = alr_scaled_clust, aes(x=age, y= C2), alpha=1, size=1.5, colour = "royalblue4") +
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
+  scale_y_continuous(position = "right", expand=c(0,0))+
+ # geom_path(data=Pig_da.clean, aes(y=Okenone, x= comp_depth_mm), alpha=.8, size=0.2, colour = "green3") +
+  labs(title = " ", y = "Pigment community 3\n Diatoms+Bacteria \n relative abundance", x = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+  axis.text.y = element_blank(), axis.title.x.top = element_text(color = "royalblue4"))+
+  # annotate("text", y= 600, x= 13700, label = "Pleniglacial", color= "blue")+
+  # annotate("text", y= 600, x= 12800, label = "Bølling", color= "darkred")+
+  # annotate("text", y= 600, x= 12.100, label = "Allerød", color= "darkred")+
+  # annotate("text", y= 600, x= 11600, label = "Lachersee tephra", color= "black", size = 3)+
+  # annotate("text", y= 600, x= 11100, label = "Younger Dryas", color= "blue")+
+  coord_flip()+ 
+  theme(legend.position="none", plot.margin = unit(c(0,0,0.5,-0.5), "cm"), axis.text = element_text(size = 12), panel.background = element_blank())
+
+```
+
+```{r}
+Pigments <- plot_grid(
+  #RABD620, RABD660,  RABD845,  
+  #Cyanos,TChls, Oke, 
+  Chlfs, Bphe, Cyano, 
+  PigCom1, PigCom3, PigCom2, 
+  Oke, Fuco,
+ # MnRedox,
+  #Chlfs, Bphe, Cyano, 
+  nrow = 1, align = "h", #scale = c(0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 1, 1)) 
+          rel_widths = c(1,1,1,1,1,1,1,1,1), axis = "tb" )
+
+png(filename = timestamp_filename("../figs", "Pigments"), width = 1754, height = 1240, units = "px", pointsize = 18, res=72)
+
+Pigments
+
+dev.off()
+
+```
+
+## Redox
+
+```{r}
+P_tot_pre <- as.data.frame(select(LR_all, 8:11))
+P_23 <- as.data.frame(select(LR_all, 9:10))
+#P_tot <- bind_cols(depth= LR_all$depth_VT22, P_tot_pre)
+P_tot <- bind_cols(age= LR_all$mean_VT22, P_tot_pre)
+#P_tot_23 <- bind_cols(depth= LR_all$depth_VT22, P_23)
+P_tot_23 <- bind_cols(age= LR_all$mean_VT22, P_23)
+
+P_stacked <- reshape2::melt(P_tot, var.names = names(P_tot)[2:ncol(P_tot)], measure.vars = names(P_tot)[2:ncol(P_tot)])
+
+P_stacked23 <- reshape2::melt(P_tot_23, var.names = names(P_tot_23)[2:ncol(P_tot_23)], measure.vars = names(P_tot_23)[2:ncol(P_tot_23)])
+
+Fe_tot_pre <- as.data.frame(select(LR_all, 16:19))
+Fe_23 <- as.data.frame(select(LR_all, 17:18))
+#Fe_tot <- bind_cols(depth= LR_all$depth_VT22, Fe_tot_pre)
+Fe_tot <- bind_cols(age= LR_all$mean_VT22, Fe_tot_pre)
+#Fe_tot_23 <- bind_cols(depth= LR_all$depth_VT22, Fe_23)
+Fe_tot_23 <- bind_cols(age= LR_all$mean_VT22, Fe_23)
+
+Fe_stacked <- reshape2::melt(Fe_tot, var.names = names(Fe_tot)[2:ncol(Fe_tot)], measure.vars = names(Fe_tot)[2:ncol(Fe_tot)])
+
+Fe_stacked23 <- reshape2::melt(Fe_tot_23, var.names = names(Fe_tot_23)[2:ncol(Fe_tot_23)], measure.vars = names(Fe_tot_23)[2:ncol(Fe_tot_23)])
+
+Mn_tot_pre <- as.data.frame(select(LR_all, 12:15))
+Mn_23 <- as.data.frame(select(LR_all, 13:14))
+Mn_23[is.na(Mn_23)] <- 0
+#Mn_tot <- bind_cols(depth= LR_all$depth_VT22, Mn_tot_pre)
+Mn_tot <- bind_cols(age= LR_all$mean_VT22, Mn_tot_pre)
+#Mn_tot_23 <- bind_cols(depth= LR_all$depth_VT22, Mn_23)
+Mn_tot_23 <- bind_cols(age= LR_all$mean_VT22, Mn_23)
+
+
+Mn_stacked <- reshape2::melt(Mn_tot, var.names = names(Mn_tot)[2:ncol(Mn_tot)], measure.vars = names(Mn_tot)[2:ncol(Mn_tot)])
+
+Mn_stacked23 <- reshape2::melt(Mn_tot_23, var.names = names(Mn_tot_23)[2:ncol(Mn_tot_23)], measure.vars = names(Mn_tot_23)[2:ncol(Mn_tot_23)])
+
+#colorsAll <- c("red", "green", "blue", "purple")
+```
+
+### Percentage contribution
+
+```{r}
+P_tot$sum <- rowSums(P_tot[2:5])
+P_tot$F1 <- (P_tot$`P-F1`/P_tot$sum)*100
+P_tot$F2 <- (P_tot$`P-F2`/P_tot$sum)*100
+P_tot$F3 <- (P_tot$`P-F3`/P_tot$sum)*100
+P_tot$F4 <- (P_tot$`P-F4`/P_tot$sum)*100
+
+P_stacked_per <- reshape2::melt(P_tot, var.names = names(P_tot)[7:ncol(P_tot)], measure.vars = names(P_tot)[7:ncol(P_tot)])
+
+
+Mn_tot$sum <- rowSums(Mn_tot[2:5])
+Mn_tot$F1 <- (Mn_tot$`Mn-F1`/Mn_tot$sum)*100
+Mn_tot$F2 <- (Mn_tot$`Mn-F2`/Mn_tot$sum)*100
+Mn_tot$F3 <- (Mn_tot$`Mn-F3`/Mn_tot$sum)*100
+Mn_tot$F4 <- (Mn_tot$`Mn-F4`/Mn_tot$sum)*100
+
+Mn_stacked_per <- reshape2::melt(Mn_tot, var.names = names(Mn_tot)[7:ncol(Mn_tot)], measure.vars = names(Mn_tot)[7:ncol(Mn_tot)])
+
+Fe_tot$sum <- rowSums(Fe_tot[2:5])
+Fe_tot$F1 <- (Fe_tot$`Fe-F1`/Fe_tot$sum)*100
+Fe_tot$F2 <- (Fe_tot$`Fe-F2`/Fe_tot$sum)*100
+Fe_tot$F3 <- (Fe_tot$`Fe-F3`/Fe_tot$sum)*100
+Fe_tot$F4 <- (Fe_tot$`Fe-F4`/Fe_tot$sum)*100
+
+Fe_stacked_per <- reshape2::melt(Fe_tot, var.names = names(Fe_tot)[7:ncol(Fe_tot)], measure.vars = names(Fe_tot)[7:ncol(Fe_tot)])
+```
+
+### Plot
+
+#### Percentage plots
+
+```{r}
+# Create the plot
+Pseq_per <- ggplot(P_stacked_per, aes(y = value, x = age, #depth 
+                                      fill = factor(variable))) +  # Group by data values
+  geom_bar(stat = "identity",width = 25, position = position_stack(reverse = TRUE)) +  # Preserve data values
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2)) +
+  labs(title = "",  # Adjust title (optional)
+       x = "Age",  # Adjust x-axis label
+       y = "Data") +  # Adjust y-axis label
+  theme_classic() + # Set theme (optional)
+  scale_fill_manual(values = c("seagreen4", "turquoise3", "seagreen2", "turquoise"))+
+coord_flip()+ 
+  labs(title = "", y = "P Fraction \n (%)", x = "") + 
+  theme(legend.position="none") #axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank()) #legend.position = "top", legend.title = element_blank())
+
+Mnseq_per <- ggplot(Mn_stacked_per, aes(y = value,  x = age, #depth 
+                                        fill = factor(variable))) +  # Group by data values
+  geom_bar(stat = "identity",width = 25,position = position_stack(reverse = TRUE)) +  # Preserve data values
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2)) +
+  labs(title = "",  # Adjust title (optional)
+       x = "Age",  # Adjust x-axis label
+       y = "Data") +  # Adjust y-axis label
+  theme_classic() + # Set theme (optional)
+  #scale_fill_viridis_d(option = "H")+
+  scale_fill_manual(values = c("dodgerblue1", "darkorchid2", "dodgerblue3", "darkorchid4"))+
+coord_flip()+ 
+  labs(title = "", y = "Mn Fraction \n (%)", x = "") + 
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank()) #legend.position = "top", legend.title = element_blank())
+
+
+Feseq_per <-  ggplot(Fe_stacked_per, aes(y = value, x = age, #depth 
+                                         fill = factor(variable))) +  # Group by data values
+  geom_bar(stat = "identity",width = 25, position = position_stack(reverse = TRUE)) +  # Preserve data values
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2)) +
+  labs(title = "",  # Adjust title (optional)
+       x = "Age",  # Adjust x-axis label
+       y = "Data") +  # Adjust y-axis label
+  theme_classic() + # Set theme (optional)
+  #scale_fill_viridis_d(option = "H")+
+  scale_fill_manual(values = c("coral3", "goldenrod1", "coral1", "goldenrod4"))+
+coord_flip()+ 
+  labs(title = "", y = "Fe Fraction \n(%)", x = "") + 
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank()) #legend.position = "top", legend.title = element_blank())
+```
+
+#### Absolute values stacked
+
+```{r}
+# Create the plot
+Pseq <- ggplot(P_stacked, aes(y = value,  x = age, #depth 
+                              fill = factor(variable))) +  # Group by data values
+  geom_bar(stat = "identity",width = 25, position = position_stack(reverse = TRUE)) +  # Preserve data values
+scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2)) +
+  labs(title = "",  # Adjust title (optional)
+       x = "Age",  # Adjust x-axis label
+       y = "Data") +  # Adjust y-axis label
+  theme_classic() + # Set theme (optional)
+  scale_fill_manual(values = c("seagreen4", "turquoise3", "seagreen2", "turquoise"))+
+coord_flip()+ 
+      scale_y_continuous(position = 'right') +
+  labs(title = "", y = "P \n (ug/g)", x = "") + 
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank()) #legend.position = "top", legend.title = element_blank())
+
+# Create the plot
+Mnseq <- ggplot(Mn_stacked, aes(y = value,  x = age, #depth 
+                                fill = factor(variable))) +  # Group by data values
+  geom_bar(stat = "identity",width = 25, position = position_stack(reverse = TRUE)) +  # Preserve data values
+scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2)) +
+  labs(title = "",  # Adjust title (optional)
+       x = "Age",  # Adjust x-axis label
+       y = "Data") +  # Adjust y-axis label
+  theme_classic() + # Set theme (optional)
+  scale_fill_manual(values = c("dodgerblue1", "darkorchid2", "dodgerblue3", "darkorchid4"))+
+coord_flip()+ 
+      scale_y_continuous(position = 'right') +
+  labs(title = "", y = "Mn \n (ug/g)", x = "") + 
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank()) #legend.position = "top", legend.title = element_blank())
+
+# Create the plot
+Feseq <- ggplot(Fe_stacked, aes(y = value,  x = age, #depth 
+                                fill = factor(variable))) +  # Group by data values
+  geom_bar(stat = "identity",width = 25, position = position_stack(reverse = TRUE)) +  # Preserve data values
+scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2)) +
+  labs(title = "",  # Adjust title (optional)
+       x = "Age",  # Adjust x-axis label
+       y = "Data") +  # Adjust y-axis label
+  theme_classic() + # Set theme (optional)
+  scale_fill_manual(values = c("coral3", "goldenrod1", "coral1", "goldenrod4"))+
+coord_flip()+ 
+      scale_y_continuous(position = 'right') +
+  labs(title = "", y = "Fe \n (ug/g)", x = "") + 
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank()) #legend.position = "top", legend.title = element_blank())
+```
+
+#### Mn redox sensitive fractions
+
+```{r}
+Mn_totRed <- select(Mn_tot, 1, 3:4)
+Mn_totRed[is.na(Mn_totRed)] <- 0
+Mn_totRed$F2F3 <- rowSums(Mn_totRed[,2:3])
+
+MnRedox2 <- ggplot()+
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age, #depth_VT22
+             linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  geom_col(data = Mn_tot, aes( x = age, #depth  
+                               y = Mn_tot$`Mn-F2`), width = 25, stat = "identity", alpha = 0.4, fill = "purple")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_y_continuous(position = "left", expand=c(0,0))+
+ # geom_path(data=Pig_da.clean, aes(y=Okenone, x= comp_depth_mm), alpha=.8, size=0.2, colour = "green3") +
+  labs(title = " ", y = "Mn redox F2 \n(µg/g)", x = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+  axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "purple"))+
+  # annotate("text", y= 600, x= 13700, label = "Pleniglacial", color= "blue")+
+  # annotate("text", y= 600, x= 12800, label = "Bølling", color= "darkred")+
+  # annotate("text", y= 600, x= 12.100, label = "Allerød", color= "darkred")+
+  # annotate("text", y= 600, x= 11600, label = "Lachersee tephra", color= "black", size = 3)+
+  # annotate("text", y= 600, x= 11100, label = "Younger Dryas", color= "blue")+
+  coord_flip()+ 
+  theme(legend.position="none")
+
+MnRedox3 <- ggplot()+
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age, #depth_VT22
+             linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  geom_col(data = Mn_tot, aes( x = age, #depth  
+                               y = Mn_tot$`Mn-F3`), width = 25, stat = "identity", alpha = 0.4, fill = "purple3")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_y_continuous(position = "left", expand=c(0,0))+
+ # geom_path(data=Pig_da.clean, aes(y=Okenone, x= comp_depth_mm), alpha=.8, size=0.2, colour = "green3") +
+  labs(title = " ", y = "Mn redox F3 \n(µg/g)", x = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+  axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "purple3"))+
+  # annotate("text", y= 600, x= 13700, label = "Pleniglacial", color= "blue")+
+  # annotate("text", y= 600, x= 12800, label = "Bølling", color= "darkred")+
+  # annotate("text", y= 600, x= 12.100, label = "Allerød", color= "darkred")+
+  # annotate("text", y= 600, x= 11600, label = "Lachersee tephra", color= "black", size = 3)+
+  # annotate("text", y= 600, x= 11100, label = "Younger Dryas", color= "blue")+
+  coord_flip()+ 
+  theme(legend.position="none")
+
+MnRedox23 <- ggplot()+
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age, #depth_VT22
+             linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  geom_col(data = Mn_totRed, aes( x = age, #depth 
+                                  y = F2F3), width = 25, stat = "identity", alpha = 0.4, fill = "purple3")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_y_continuous(position = "left", expand=c(0,0))+
+ # geom_path(data=Pig_da.clean, aes(y=Okenone, x= comp_depth_mm), alpha=.8, size=0.2, colour = "green3") +
+  labs(title = " ", y = "Mn redox F2+3 \n(µg/g)", x = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+  axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "purple3"))+
+  # annotate("text", y= 600, x= 13700, label = "Pleniglacial", color= "blue")+
+  # annotate("text", y= 600, x= 12800, label = "Bølling", color= "darkred")+
+  # annotate("text", y= 600, x= 12.100, label = "Allerød", color= "darkred")+
+  # annotate("text", y= 600, x= 11600, label = "Lachersee tephra", color= "black", size = 3)+
+  # annotate("text", y= 600, x= 11100, label = "Younger Dryas", color= "blue")+
+  coord_flip()+ 
+  theme(legend.position="none")
+```
+
+#### Fraction 2 and 3 only
+
+```{r}
+Mnseq23 <- ggplot(Mn_stacked23, aes(y = value,  x = age, #depth 
+                                    fill = factor(variable))) + 
+    geom_vline(data= PollenZPig, xintercept = PollenZPig$age, #depth_VT22
+               linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+ # Group by data values
+  geom_bar(stat = "identity",width = 25, position = position_stack(reverse = TRUE)) +  # Preserve data values
+scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), expand=c(0,0)) +
+  labs(title = "",  # Adjust title (optional)
+       x = "Age",  # Adjust x-axis label
+       y = "Data") +  # Adjust y-axis label
+  theme_classic() + # Set theme (optional)
+  scale_fill_manual(values = c("darkorchid4","dodgerblue1", "darkorchid2", "dodgerblue3"))+
+coord_flip()+ 
+      scale_y_continuous(position = 'left',  expand=c(0,0)) +
+  labs(title = "", y = "Mn redox fractions, \n F2 (purple),\n F3 (blue) (ug/g)  ", x = "") + 
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), plot.margin = unit(c(0,0,0.5,-0.63), "cm"),axis.text = element_text(size = 12), panel.background = element_blank()) #legend.position = "top", legend.title = element_blank())
+
+
+
+Feseq23 <- ggplot(Fe_stacked23, aes(y = value,  x = age, #depth 
+                                    fill = factor(variable))) +  # Group by data values
+  geom_bar(stat = "identity",width = 25, position = position_stack(reverse = TRUE)) +  # Preserve data values
+scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), expand=c(0,0)) +
+  labs(title = "",  # Adjust title (optional)
+       x = "Depth",  # Adjust x-axis label
+       y = "Data") +  # Adjust y-axis label
+  theme_classic() + # Set theme (optional)
+  scale_fill_manual(values = c("coral3", "goldenrod1", "coral1", "goldenrod4"))+
+coord_flip()+ 
+      scale_y_continuous(position = 'left',  expand=c(0,0)) +
+  labs(title = "", y = "Fe redox fractions\n (ug/g)", x = "") + 
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank()) #legend.position = "top", legend.title = element_blank())
+
+
+
+Pseq23 <- ggplot(P_stacked23, aes(y = value,  x = age, #depth 
+                                  fill = factor(variable))) +  # Group by data values
+  geom_bar(stat = "identity",width = 25, position = position_stack(reverse = TRUE)) +  # Preserve data values
+scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), expand=c(0,0)) +
+  labs(title = "",  # Adjust title (optional)
+       x = "Depth",  # Adjust x-axis label
+       y = "Data") +  # Adjust y-axis label
+  theme_classic() + # Set theme (optional)
+  scale_fill_manual(values = c("seagreen4", "turquoise3", "seagreen2", "turquoise"))+
+coord_flip()+ 
+      scale_y_continuous(position = 'left',  expand=c(0,0)) +
+  labs(title = "", y = "P redox fractions\n (ug/g)", x = "") + 
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank()) #legend.position = "top", legend.title = element_blank())
+```
+
+```{r}
+Redox <- plot_grid(Pseq_per, Feseq_per, Mnseq_per, Pseq, Feseq, Mnseq, Pseq23,  Feseq23, Mnseq23,
+  nrow = 1, align = "h", #scale = c(0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 1, 1)) 
+          rel_widths = c(1,1,1,1,1,1), axis = "tb" )
+
+png(filename = timestamp_filename("../figs", "Redox"), width = 1754, height = 1260, units = "px", pointsize = 14, res=120)
+
+Redox
+
+dev.off()
+```
+
+### Stacked plots
+
+```{r}
+PigmentsR <- plot_grid(
+  #RABD620, RABD660,  RABD845,  
+  #Cyanos,TChls, Oke, 
+  Chlfs, Bphe, Cyano, 
+  PigCom1, PigCom3, PigCom2, 
+  Oke, Fuco,
+  #MnRedox23,
+  Mnseq23, #Feseq23, Pseq23,
+#MnRedox3,  MnRedox2, 
+  #Chlfs, Bphe, Cyano, 
+  nrow = 1, align = "h", #scale = c(0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 1, 1)) 
+          rel_widths = c(1,1,1,1,1,1,1,1,1, 1,1), axis = "tb" )
+#dev.off()
+
+png(filename = timestamp_filename("../figs", "PigmentsR"), width = 1754, height = 1260, units = "px", pointsize = 14, res=120)
+
+PigmentsR
+
+dev.off()
+```
+
+## Diatom selection
+
+Load the diatom counts data and convert it to count%. Filter out all the columns/diatom species which have below 3% op counts.
+
+```{r}
+DiatL <- read_excel("../data/SourceData/diatoms_Lujan.xlsx") 
+
+#Conversion of counts to %
+diaL_perc <- adorn_percentages(DiatL, denominator = "row", na.rm = TRUE, 4:94) #na.rm = TRUE,
+diaL_100 <- na.omit(cbind(diaL_perc[2:3], diaL_perc[4:94]*100)) 
+
+# Threshold value of 3%
+threshold <- 3 
+
+# Function to filter columns based on threshold 
+filter_columns <- function(df, threshold) {
+  df %>% 
+    select_if(~ any(. >= threshold)) 
+  } 
+# Apply the function to the data
+filtered_diaL<- filter_columns(diaL_100, threshold)
+
+write.xlsx(filtered_diaL, "../data/diatom_filtered.xlsx", rowNames = FALSE)
+
+#df_plot <- filtered_data[3:18]
+```
+
+Load the diatom names
+
+```{r}
+DiaN <- read_excel("../data/SourceData/diatoms_Lujan.xlsx", sheet = "diatoms_name") #names <- as.list(DiaN[,1])
+```
+
+```{r}
+df_names <- as.data.frame(DiaN) 
+names <- as.vector(df_names[,1])
+```
+
+```{r}
+rownames(df_names) <- names
+```
+
+```{r}
+rownames(filtered_diaL) <- filtered_diaL[, 2] # 1 for depth
+#rownames(DiaN) <- DiaN[ ,1] 
+df_names<- df_names[,-1]
+```
+
+```{r}
+#filtered_diaL <- filtered_diaL[,-1] 
+
+#annotation_colD = df_names[1]
+annotation_colA = df_names[1]
+```
+
+```{r}
+PolZD <- read_excel("../data/SourceData/diatoms_Lujan.xlsx", sheet = "PolZ") 
+#depth_mat <- as.data.frame(PolZD) 
+age_mat <- as.data.frame(PolZD) 
+#rownames(depth_mat) <- depth_mat[,1] 
+rownames(age_mat) <- age_mat[,2] 
+#depth_mat <- depth_mat[,-1] 
+#annotation_rowD = depth_mat[3]
+annotation_rowA = age_mat[3]
+```
+
+```{r}
+#df_depth <- filtered_diaL[1] 
+df_age <- filtered_diaL[2] 
+df<- filtered_diaL[3:18] 
+#df_cut<- filtered_diaL[1:20,2:17] 
+#df_anox <- df_na_df[1:49, 3:23]
+```
+
+### Clustering
+
+```{r}
+png(filename = timestamp_filename("../figs", "diatoms"), width = 1754, height = 1260, units = "px", pointsize = 14, res=120)
+
+y.scale <- filtered_diaL$mean_VT22
+#y.scale <- filtered_diaL$`comp_depth_(mm)`
+
+ma.dist <- vegdist(df, method="bray", binary=FALSE, diag=FALSE, upper=FALSE, na.rm = FALSE) 
+ma.chclust <- chclust(ma.dist, method="coniss")
+
+dia.plot <- strat.plot(df, yvar=y.scale, y.tks=y.scale,  ylim= c(limYmin, limYmax), y.rev=TRUE, plot.line=FALSE, plot.poly=TRUE, plot.bar=TRUE, col.bar="black", #col.poly=p.col, 
+col.poly.line="black", scale.percent=FALSE, xSpace=0.01, x.pc.inc=5, x.pc.lab=TRUE, x.pc.omit0=TRUE, srt.xlabel=45, las=2, col.exag="auto", exag.mult=3, exag.alpha=0.50, title="Holzmaar diatoms LG Samples", ylabel="Sample", clust=ma.chclust)
+
+# Add cluster zones
+
+addClustZone(dia.plot, ma.chclust, nZone=3, lwd=1.5, lty=2, col="grey25")
+
+dev.off()
+#dev.off()
+```
+
+```{r}
+# remove_high_zero_columns <- function(data) { 
+#   # # Calculate the proportion of zeros in each column 
+#   prop_zeros <- colMeans(data == 0) 
+#   # Keep columns with less than or equal to 95% zeros 
+#   data[, prop_zeros <= 0.05] 
+#   } #
+
+# Remove columns with high zero proportion 
+# df_clcl<- as.data.frame(remove_high_zero_columns(df_corr_cl)) 
+#dfD_cl<- as.data.frame(remove_high_zero_columns(df_cut)) 
+#dfD_scaled_cut<- scale(dfD_cl) #dfD_anox_scaled <- scale(df_anoxB)
+
+dfD_scaled<- scale(df) 
+```
+
+### Heatmaps
+
+```{r}
+ann_colorsD = list( group = c(`benthic+epiphytic` = "darkorange3", planktonic ="royalblue2"), PolZD = c(`Pleniglacial` = "dodgerblue", `Bølling` = "tomato2", `Allerød` = "tomato4")) 
+
+#Both dimension clustering 
+png(filename = timestamp_filename("../figs", "diatoms_heat"), width = 1200, height = 1000, units = "px", pointsize = 14, res=120)
+
+pheatmap(dfD_scaled, show_rownames=T,show_colnames=T, 
+         annotation_col=annotation_colA, annotation_row = annotation_rowA, 
+         annotation_colors = ann_colorsD, 
+         scale = "none",clustering_method="ward.D2", #cluster_rows = F, 
+         clustering_distance_cols="correlation", clustering_distance_rows = "euclidean",
+         cutree_rows = 3, 
+         cutree_cols = 3, treeheight_row = 50, 
+         treeheight_col = 50, color = colorRampPalette(c("lightskyblue1","darkseagreen1","lightgreen","yellow", "orange", "red", "purple"))(15))
+
+dev.off() 
+
+# Only correlation clustering 
+png(filename = timestamp_filename("../figs", "diatoms_heat_corr"), width = 1200, height = 1000, units = "px", pointsize = 14, res=120)
+
+pheatmap(dfD_scaled, show_rownames=T,show_colnames=T, 
+         annotation_col=annotation_colA, annotation_row = annotation_rowA, 
+         annotation_colors = ann_colorsD, 
+         scale = "none",clustering_method="ward.D2", cluster_rows = F, 
+         clustering_distance_cols="correlation", #clustering_distance_rows = "euclidean", # cutree_rows = 5, 
+         cutree_cols = 3, #treeheight_row = 50, 
+         treeheight_col = 50, color = colorRampPalette(c("lightskyblue1","darkseagreen1","lightgreen","yellow", "orange", "red", "purple"))(15)) 
+
+dev.off()
+```
+
+Based on the correlation clusters and the ecological meaning, we select further: Staurosira construens as a benthic oligotrophic species, Amphora indistinta as a oligo-to-mesotrophic species growing under low N conditions, Pantocekiella ocellata as a oligo-to-mesotrophic species growing in shallow/lithoral areas and finally Stephanodicus minutulus as a meso-to-eutrophic species growing in well-mixed, oxygenated water column.
+
+### Plot
+
+```{r}
+Amph <- ggplot(filtered_diaL, aes(y= Amphora_indistinta, x= mean_VT22))+ #`comp_depth_(mm)`))+ 
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age, #depth_VT22
+               linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  #geom_point(colour = "green", size= 0.02)+
+  geom_bar(stat = "identity", width = 25, fill = "blue")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), expand=c(0,0)) +
+    scale_y_continuous(position = 'left', expand=c(0,0)) +
+ #geom_path(alpha=1, size=1, colour = "green") +
+  theme_classic() +
+        scale_fill_viridis_d(option = "H")+
+   coord_flip()+ 
+  labs(title = " ", y = "Amphora\n indistinta (P) \n %counts ", x = " ") +
+theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), plot.margin = unit(c(0,0,0.5,-0.55), "cm"),axis.text = element_text(size = 12), panel.background = element_blank())
+
+Pant <- ggplot(filtered_diaL , aes(y=Pantosekiella_ocellata,x= mean_VT22))+ #`comp_depth_(mm)`))+
+   geom_vline(data= PollenZPig, xintercept = PollenZPig$age, #depth_VT22
+               linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  #geom_point(colour = "green", size= 0.02)+
+  geom_bar(stat = "identity", width = 25, fill = "brown")+
+   scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), expand=c(0,0)) +
+    scale_y_continuous(position = 'right', expand=c(0,0)) +
+ #geom_path(alpha=1, size=1, colour = "green") +
+  theme_classic() +
+        scale_fill_viridis_d(option = "H")+
+   coord_flip()+ 
+    labs(title = " ", y = "Pantosekiella\n ocellata (B) \n %counts " , x = " ") +
+theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),plot.margin = unit(c(0,0,0.5,-0.55), "cm"),axis.text = element_text(size = 12), panel.background = element_blank())
+
+Stau <- ggplot(filtered_diaL , aes(y=Staurosira_construens, x= mean_VT22))+ #`comp_depth_(mm)`))+
+   geom_vline(data= PollenZPig, xintercept = PollenZPig$age, #depth_VT22
+               linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  #geom_point(colour = "green", size= 0.02)+
+  geom_bar(stat = "identity", width = 25, fill = "brown")+
+   scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), expand=c(0,0)) +
+    scale_y_continuous(position = 'right', expand=c(0,0)) +
+ #geom_path(alpha=1, size=1, colour = "green") +
+    scale_fill_viridis_d(option = "H")+
+   coord_flip()+ 
+    theme_classic() +
+  labs(title = " ", y = "Staurosira \n construens (B)\n %counts  ", x = " ") +
+theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),plot.margin = unit(c(0,0,0.5,-0.55), "cm"),axis.text = element_text(size = 12), panel.background = element_blank())
+
+Steph <-ggplot(filtered_diaL , aes(y=Stephanodiscus_minutulus, x= mean_VT22))+ #`comp_depth_(mm)`))+
+   geom_vline(data= PollenZPig, xintercept = PollenZPig$age, #depth_VT22
+               linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  geom_bar(stat = "identity", width = 25, fill = "blue")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), expand=c(0,0)) +
+    scale_y_continuous(position = 'left', expand=c(0,0)) +
+ #geom_path(alpha=1, size=1, colour = "green") +
+  theme_classic() +
+    scale_fill_viridis_d(option = "H")+
+  coord_flip()+ 
+    labs(title = " ", y = "Stephanodiscus\n minutulus (P)\n %counts ", x = " ") +
+theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),plot.margin = unit(c(0,0,0.5,-0.55), "cm"),axis.text = element_text(size = 12), panel.background = element_blank())
+```
+
+```{r}
+PigmentsRD <- plot_grid(
+  #RABD620, RABD660,  RABD845,  
+  #Cyanos,TChls, Oke, 
+  Chlfs, Bphe, Cyano, 
+  PigCom1, PigCom3, PigCom2, 
+  Oke, Fuco,
+  #MnRedox23,
+  Mnseq23, #Feseq23, Pseq23,
+#MnRedox3,  MnRedox2, 
+  #Chlfs, Bphe, Cyano, 
+  Stau, Amph, Pant, Steph,
+  nrow = 1, align = "h", #scale = c(0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 1, 1)) 
+          rel_widths = c(1,1,1,1,1,1,1,1,1, 1,1, 1,1 ,1), axis = "tb" )
+#dev.off()
+
+png(filename = timestamp_filename("../figs", "PigmentsRedDia"), width = 1754, height = 1260, units = "px", pointsize = 14, res=120)
+
+PigmentsRD
+
+dev.off()
+```
+
+## Pollen
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+PollenDat <- read_excel("../data/SourceData/Pollen_Litt_Usinger_stacked.xlsx", sheet = "LittLittStackedPer", col_types = "numeric")
+
+PolDat<- PollenDat[3:155,]
+PolDatStat <- PolDat[, 3:112]
+```
+
+```{r}
+#PolDat[is.na(PolDat)] <- 0
+# perc_pol <- adorn_percentages(PolDat, denominator = "row", na.rm = TRUE, 3:112)
+# perc_pol_100 <- cbind(perc_pol[1:2], perc_pol[3:112]*100)
+
+
+MeerPinus <- read_excel("../data/SourceData/Meerfeldemar_pollen.xlsx", sheet = "Pinus", col_types = "numeric")
+
+MeerBetula <- read_excel("../data/SourceData/Meerfeldemar_pollen.xlsx", sheet = "Betula", col_types = "numeric")
+
+MeerAP <- read_excel("../data/SourceData/Meerfeldemar_pollen.xlsx", sheet = "Herbs", col_types = "numeric")
+```
+
+### Clustering
+
+```{r}
+png(filename = timestamp_filename("../figs", "pollen"), width = 1754, height = 1260, units = "px", pointsize = 14, res=120)
+y.scale <- PolDat$age
+#y.scale <- filtered_diaL$`comp_depth_(mm)`
+
+# Remove pollen types where total abundanace is less than 10%
+ma.sum <- colSums(PolDatStat) # Calculate column sums
+pol_cl_per <- PolDatStat[, which(ma.sum > 10)] # Subset data
+
+pol_df<- pol_cl_per[3:34]
+pol_df[is.na(pol_df)] <-0
+
+ma.dist <- vegdist(pol_df, method="bray", binary=FALSE, diag=FALSE, upper=FALSE, na.rm = FALSE) 
+ma.chclust <- chclust(ma.dist, method="coniss")
+
+pol.plot <- strat.plot(pol_df, yvar=y.scale, y.tks=y.scale,  ylim= c(limYmin, limYmax),
+                       y.rev=TRUE, plot.line=FALSE, plot.poly=TRUE, plot.bar=TRUE, col.bar="black", #col.poly=p.col, 
+col.poly.line="black", scale.percent=FALSE, xSpace=0.01, x.pc.inc=5, x.pc.lab=TRUE, x.pc.omit0=TRUE, srt.xlabel=45, las=2, col.exag="auto", exag.mult=3, exag.alpha=0.50, title="Holzmaar pollen Litt Litt stack", ylabel="Sample", clust=ma.chclust)
+
+# Add cluster zones
+addClustZone(pol.plot, ma.chclust, nZone=10, lwd=1.5, lty=2, col="grey25")#dev.off()
+```
+
+```{r}
+APNAP <- select(PolDat, 1:2, 116, 115)
+Trees <- select(PolDat, 1,2,8,41,54,55,71)
+
+pollen_stacked_per <- melt(APNAP, var.names = names(APNAP)[3:ncol(APNAP)], measure.vars = names(APNAP)[3:ncol(APNAP)])
+
+Meer_pollen_stacked <- melt(MeerAP, var.names = names(MeerAP)[2:ncol(MeerAP)], measure.vars = names(MeerAP)[2:ncol(MeerAP)])
+```
+
+### Pollen plots
+
+```{r}
+poll<- ggplot(pollen_stacked_per, aes(y= value, x=pollen_stacked_per$age, fill=factor(variable)))+
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age, #depth_VT22
+               linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  #geom_point(colour = "green", size= 0.02)+
+  geom_bar(stat = "identity", width = 25)+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), expand=c(0,0)) +
+    scale_y_continuous(position = 'right', expand=c(0,0)) +
+ #geom_path(alpha=1, size=1, colour = "green") +
+  theme_classic() +
+        scale_fill_manual(values = c("goldenrod","springgreen2"))+
+   coord_flip()+ 
+  labs(title = " ", y = "AP and NAP \n(%)", x = " ") +
+theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+
+Pinus <- ggplot(Trees , aes(y= Pinus, x= age))+
+  #geom_point(colour = "green", size= 0.02)+
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age, #depth_VT22
+               linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  geom_bar(stat = "identity", width = 25, fill = "forestgreen")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2),expand=c(0,0)) +
+    scale_y_continuous(position = 'left', expand=c(0,0)) +
+ #geom_path(alpha=1, size=1, colour = "green") +
+  theme_classic() +
+   coord_flip()+
+  labs(title = " ", y = "Pinus \n(%)", x = " ") +
+theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+Betula <- ggplot(Trees , aes(y= Betula, x= age))+
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age, #depth_VT22
+               linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  #geom_point(colour = "green", size= 0.02)+
+  geom_bar(stat = "identity", width = 25, fill = "burlywood3")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2),expand=c(0,0)) +
+    scale_y_continuous(position = 'right', expand=c(0,0)) +
+ #geom_path(alpha=1, size=1, colour = "green") +
+  theme_classic() +
+   coord_flip()+
+  labs(title = " ", y = "Betula\n (%)", x = " ") +
+theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+Juniperus <- ggplot(Trees , aes(y= Trees$Juniperus, x= age))+
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age, #depth_VT22
+               linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  #geom_point(colour = "green", size= 0.02)+
+  geom_bar(stat = "identity", width = 25, fill = "palegreen4")+
+  annotate("text", y= 0.8, x= 14950, label = "Pleniglacial", color= "blue")+
+  annotate("text", y= 0.8, x= 14050, label = "Bølling", color= "darkred")+
+  annotate("text", y= 0.8, x= 13350, label = "Allerød", color= "darkred")+
+  annotate("text", y= 0.8, x= 13000, label = "Lachersee \n tephra", color= "black")+
+  annotate("text", y= 0.8, x= 12250, label = "Younger Dryas", color= "blue")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2),expand=c(0,0), position = "top") +
+    scale_y_continuous(position = 'left',expand=c(0,0)) +
+ #geom_path(alpha=1, size=1, colour = "green") +
+  theme_classic() +
+   coord_flip()+
+  labs(title = " ", y = "Juniperus\n (%)", x = " Age (Cal yr BP)" ) +
+theme(legend.position="none", plot.margin = unit(c(0,0,0.5,-0.2), "cm"), axis.text = element_text(size = 12), panel.background = element_blank())# axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+
+PollenFig <-plot_grid(poll, Pinus, Betula, Juniperus, nrow=1, rel_heights = c(1,1,1,1), hjust = -0.5, label_size = 18,
+                    label_fontfamily = sans)
+
+png(filename = timestamp_filename("../figs", "pollen_stack"), width = 1754, height = 1260, units = "px", pointsize = 14, res=120)
+
+PollenFig
+
+dev.off()
+```
+
+### Meerfeldemaar pollen underlay
+
+```{r}
+pollCombo<- ggplot()+
+  #geom_point(colour = "green", size= 0.02)+
+  geom_col(data = Meer_pollen_stacked, aes(y= value, x=Meer_pollen_stacked$`Age varve BC`, fill=factor(variable)), stat = "identity", width = 20, alpha = 0.4)+
+    geom_bar(data = pollen_stacked_per, aes(y= value, x=pollen_stacked_per$age, fill=factor(variable)), stat = "identity", width = 30)+
+geom_vline(data= PollenZPig, xintercept = PollenZPig$age, #depth_VT22
+               linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2), expand=c(0,0)) +
+ #geom_path(alpha=1, size=1, colour = "green") +
+  theme_classic() +
+        scale_fill_manual(values = c("springgreen3","goldenrod","goldenrod3","springgreen"))+
+   coord_flip()+ 
+  scale_y_continuous(position = 'right', expand=c(0,0), sec.axis = sec_axis(~ . *1, name = "Holzmaar \n AP and NAP (%)")) +
+  labs(title = " ", y = "Meerfeldmaar\n AP and NAP (%)", x = " ") +
+theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),plot.margin = unit(c(0,0,0.5,-0.55), "cm"), axis.text = element_text(size = 12), panel.background = element_blank())
+
+PinusCombo <- ggplot()+
+  geom_col(data = MeerPinus, aes(y= MeerPinus$`Pinus%`, x=MeerPinus$`Age varve yr BP`), fill="forestgreen", stat = "identity", width = 20, alpha = 0.4 )+
+  #geom_point(colour = "green", size= 0.02)+
+  geom_bar(data=Trees , aes(y= Pinus, x= age), stat = "identity", width = 30, fill = "darkseagreen4")+
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age, #depth_VT22
+               linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2),expand=c(0,0)) +
+    scale_y_continuous(position = 'left', expand=c(0,0), sec.axis = sec_axis(~ . *1, name = " Meerfeldemaar \n Pinus (%)")) +
+ #geom_path(alpha=1, size=1, colour = "green") +
+  theme_classic() +
+   coord_flip()+
+  labs(title = " ", y = "Holzmaar \n Pinus (%)", x = " ") +
+theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),plot.margin = unit(c(0,0,0.5,-0.55), "cm"),axis.text = element_text(size = 12), panel.background = element_blank())
+
+BetulaCombo <- ggplot()+
+  geom_col(data = MeerBetula, aes(y= MeerBetula$`Betula%`, x=MeerBetula$`Age varve yr BP`), fill="burlywood", stat = "identity", width = 20, alpha = 0.4 )+
+  #geom_point(colour = "green", size= 0.02)+
+  geom_bar(data=Trees , aes(y= Betula, x= age), stat = "identity", width = 30, fill = "burlywood4")+
+  geom_vline(data= PollenZPig, xintercept = PollenZPig$age, #depth_VT22
+               linetype = PollenZPig$line, color= PollenZPig$color, alpha = 0.8)+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 100), digits = 2),expand=c(0,0)) +
+    scale_y_continuous(position = 'left', expand=c(0,0), sec.axis = sec_axis(~ . *1, name = "Meerfeldemaar \n Betula (%)")) +
+ #geom_path(alpha=1, size=1, colour = "green") +
+  theme_classic() +
+   coord_flip()+
+  labs(title = " ", y = "Holzmaar \n Betula (%)", x = " ") +
+theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),plot.margin = unit(c(0,0,0.5,-0.55), "cm"), axis.text = element_text(size = 12), panel.background = element_blank())
+
+
+```
+
+# Figure 2 combined
+
+```{r}
+# png(filename = "~/work/holzmaar/data/fig/Figure2_alt.png", width = 3000, height = 1500, units = "px", pointsize = 13, res=110 )
+
+Fig2 <- plot_grid(
+  RABD620, RABD660,  RABD845,  
+  Cyanos,TChls, Oke, Fuco,
+  #Chlfs, Bphe, Cyano, 
+  PigCom1, PigCom3, PigCom2, 
+  #Oke, 
+  #MnRedox23,
+  Mnseq23, #Feseq23, Pseq23,
+#MnRedox3,  MnRedox2, 
+  #Chlfs, Bphe, Cyano, 
+  Stau, Amph, Pant, Steph,
+pollCombo, PinusCombo, BetulaCombo, Juniperus,
+  nrow = 1, align = "h", #scale = c(0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 1, 1)) 
+          rel_widths = c(1, 0.6,0.6,
+                         0.65,0.65,0.65, 0.65,
+                         0.8,0.8,0.8,
+                         0.7,
+                         0.6, 0.6, 0.6, 0.67,
+                         0.6 ,0.6, 0.6, 1), 
+          axis = "tb"
+          #panel_spacing = unit(0.05, "lines")
+)
+
+png(filename = timestamp_filename("../figs", "Figure2_alt_res"), width = 1754, height = 1240, units = "px", pointsize = 14, res=72)
+
+Fig2
+
+dev.off()
+```
+
+# Figure 2 Journal Format - Recreate plots with smaller fonts
+
+```{r}
+# Journal format font sizes (following notebook 05 settings)
+journal_font_size <- 5.5
+journal_axis_text_size <- 5.5
+journal_title_size <- 5.5
+
+# Recreate HSI plots with journal formatting
+RABD620_j <- ggplot()+
+  geom_vline(xintercept=mean(HSI_data$RABD620), color="dodgerblue1", linetype = 1) +
+  geom_vline(xintercept=mean(HSI_data$RABD620) + sd(HSI_data$RABD620), color="gray", linetype = 2) +
+  geom_vline(xintercept=mean(HSI_data$RABD620) - sd(HSI_data$RABD620), color="gray", linetype = 2) +
+  geom_point(data= HSI_data, aes(y=mean_VT22, x= RABD620), colour = "dodgerblue1", size= 0.3)+
+  geom_path(data = HSI_data, aes(y=mean_VT22, x= RABD620), alpha=.8, size=0.8, colour = "dodgerblue1") +
+  scale_y_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_x_continuous(position = "bottom", expand=c(0,0), breaks = c(1, 1.02))+
+  labs(title = " ", x = "RABD620\n(Phycocyanin)", y = "Age (Cal yr BP)")+
+  theme_classic(base_size = journal_font_size) +
+  theme(legend.position="none", 
+        axis.title.x.bottom = element_text(color = "dodgerblue1", size = journal_title_size, face="bold"), 
+        axis.title.y = element_text(size = journal_title_size, face="bold"),
+        axis.text = element_text(size = journal_axis_text_size), 
+        plot.margin = unit(c(0,0,0.5,0), "cm"), 
+        panel.background = element_blank(),
+        plot.background = element_blank())
+
+RABD660_j <- ggplot()+
+  geom_point(data= HSI_data, aes(y=mean_VT22, x= RABD670calib), colour = "limegreen", size= 0.3)+
+  geom_path(data = HSI_data, aes(y=mean_VT22, x= RABD670calib), alpha=.8, size=0.8, colour = "limegreen") +
+  scale_y_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_x_continuous(position = "top", expand=c(0,0), breaks = c(0,20,40))+
+  labs(title = " ", x = "Total Chls\n(µg/g wet sed)", y = " ") +
+  theme_classic(base_size = journal_font_size) +
+  theme(legend.position="none", 
+        axis.title.x.top = element_text(color = "limegreen", size = journal_title_size, face="bold"), 
+        axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),
+        plot.margin = unit(c(0,0,0.5,-0.3), "cm"),
+        axis.text = element_text(size = journal_axis_text_size), 
+        panel.background = element_blank(),
+        plot.background = element_blank())
+
+RABD845_j <- ggplot()+
+  geom_point(data= HSI_data, aes(y=mean_VT22, x= RABD845calib), colour = "violet", size= 0.3)+
+  geom_path(data = HSI_data, aes(y=mean_VT22, x= RABD845calib), alpha=.8, size=0.8, colour = "violet") +
+  scale_y_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_x_continuous(position = "bottom", expand=c(0,0), n.breaks = 3)+
+  labs(title = " ", x = "Bacteriopheophytin a\n(µg/g wet sed)", y = " ") +
+  theme_classic(base_size = journal_font_size) +
+  theme(legend.position="none", 
+        axis.title.x.bottom = element_text(color = "violet", size = journal_title_size, face="bold"), 
+        axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),
+        plot.margin = unit(c(0,0.1,0.5,-0.3), "cm"),
+        axis.text = element_text(size = journal_axis_text_size), 
+        panel.background = element_blank(),
+        plot.background = element_blank())
+
+# Recreate pigment plots with journal formatting using Pig_da.clean
+Cyanos_j <- ggplot()+
+  geom_col(data = Pig_da.clean, aes(x=Pig_da.clean$mean_VT22, y =Pig_da.clean$Cyanos), 
+           width = 25, stat = "identity", alpha = 0.4, fill = "lightseagreen")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), 
+                  guide = guide_axis(position = "right"), expand=c(0,0)) +
+  scale_y_continuous(position = "right", expand=c(0,0), n.breaks = 3)+
+  labs(title = " ", y = "Echi+Cantha+Zea\n(µg/g OM)", x = " ") +
+  theme_classic(base_size = journal_font_size) +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+        axis.text.y = element_blank(), 
+        axis.title.x.top = element_text(color = "lightseagreen", size = journal_title_size, face="bold"),
+        plot.margin = unit(c(0,0,0.5,-0.1), "cm"),
+        axis.text = element_text(size = journal_axis_text_size),
+        panel.background = element_blank(),
+        plot.background = element_blank())+
+  coord_flip()
+
+TChls_j <- ggplot()+
+  geom_col(data = Pig_da.clean, aes(x=Pig_da.clean$mean_VT22, y =Pig_da.clean$TChl), 
+           width = 25, stat = "identity", alpha = 0.4, fill = "springgreen3")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), 
+                  guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_y_continuous(position = "left", expand=c(0,0), breaks = c(0,250, 500, 750))+
+  labs(title = " ", y = "Total Chls\n(µg/g OM)", x = " ") +
+  theme_classic(base_size = journal_font_size) +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.x.bottom = element_text(color = "springgreen3", size = journal_title_size, face="bold"),
+        plot.margin = unit(c(0,-0.2,0.5,-0.55), "cm"),
+        axis.text = element_text(size = journal_axis_text_size),
+        panel.background = element_blank(),
+        plot.background = element_blank())+
+  coord_flip()
+
+Oke_j <- ggplot()+
+  geom_col(data = Pig_da.clean, aes(x=Pig_da.clean$mean_VT22, y =Pig_da.clean$Okenone), 
+           width = 25, stat = "identity", alpha = 0.4, fill = "maroon4")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), 
+                  guide = guide_axis(position = "right"), expand=c(0,0)) +
+  scale_y_continuous(position = "right", expand=c(0,0), n.breaks = 3)+
+  labs(title = " ", y = "Okenone\n(µg/g OM)", x = " ") +
+  theme_classic(base_size = journal_font_size) +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.x.top = element_text(color = "maroon4", size = journal_title_size, face="bold"),
+        plot.margin = unit(c(0,-0.2,0.5,0), "cm"),
+        axis.text = element_text(size = journal_axis_text_size),
+        panel.background = element_blank(),
+        plot.background = element_blank())+
+  coord_flip()
+
+Fuco_j <- ggplot()+
+  geom_col(data = Pig_da.clean, aes(x=Pig_da.clean$mean_VT22, y =Pig_da.clean$Fuco), 
+           width = 25, stat = "identity", alpha = 0.4, fill = "darkorange3")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), 
+                  guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_y_continuous(position = "left", expand=c(0,0), breaks = c(0, 25, 50, 75))+
+  labs(title = " ", y = "Fucoxanthin\n(µg/g OM)", x = " ") +
+  theme_classic(base_size = journal_font_size) +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.x.bottom = element_text(color = "darkorange3", size = journal_title_size, face="bold"),
+        plot.margin = unit(c(0,0,0.5,-0.35), "cm"),
+        axis.text = element_text(size = journal_axis_text_size),
+        panel.background = element_blank(),
+        plot.background = element_blank())+
+  coord_flip()
+
+# Recreate PCA component plots with journal formatting using alr_scaled_clust
+PigCom1_j <- ggplot()+
+  geom_path(data = alr_scaled_clust, aes(x=age, y= C1), alpha=1, size=0.8, colour = "royalblue1") +
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), 
+                  guide = guide_axis(position = "right"), expand=c(0,0)) +
+  scale_y_continuous(position = "right", expand=c(0,0), n.breaks = 5)+
+  labs(title = " ", y = "Pigment group 1\nPioneers", x = " ") +
+  theme_classic(base_size = journal_font_size) +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.x.top = element_text(color = "royalblue1", size = journal_title_size, face="bold"),
+        plot.margin = unit(c(0,0,0.5,-0.2), "cm"),
+        axis.text = element_text(size = journal_axis_text_size),
+        panel.background = element_blank(),
+        plot.background = element_blank())+
+  coord_flip()
+
+PigCom3_j <- ggplot()+
+  geom_path(data = alr_scaled_clust, aes(x=age, y= C3), alpha=1, size=0.8, colour = "royalblue3") +
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), 
+                  guide = guide_axis(position = "left"), expand=c(0,0)) +
+  scale_y_continuous(position = "left", expand=c(0,0), n.breaks = 3)+
+  labs(title = " ", y = "Pigment group 2\nSecondary colonisers", x = " ") +
+  theme_classic(base_size = journal_font_size) +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.x.bottom = element_text(color = "royalblue3", size = journal_title_size, face="bold"),
+        plot.margin = unit(c(0,0.05,0.5,-0.55), "cm"),
+        axis.text = element_text(size = journal_axis_text_size),
+        panel.background = element_blank(),
+        plot.background = element_blank())+
+  coord_flip()
+
+PigCom2_j <- ggplot()+
+  geom_path(data = alr_scaled_clust, aes(x=age, y= C2), alpha=1, size=0.8, colour = "royalblue4") +
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), 
+                  guide = guide_axis(position = "right"), expand=c(0,0)) +
+  scale_y_continuous(position = "right", expand=c(0,0), n.breaks = 3)+
+  labs(title = " ", y = "Pigment group 3\nDiatoms+Bacteria", x = " ") +
+  theme_classic(base_size = journal_font_size) +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.x.top = element_text(color = "royalblue4", size = journal_title_size, face="bold"),
+        plot.margin = unit(c(0,0,0.5,-0.05), "cm"),
+        axis.text = element_text(size = journal_axis_text_size),
+        panel.background = element_blank(),
+        plot.background = element_blank())+
+  coord_flip()
+
+# Recreate Mn sequential extraction plot with journal formatting using Mn_stacked23
+Mnseq23_j <- ggplot(Mn_stacked23, aes(y = value,  x = age, fill = factor(variable))) + 
+  geom_bar(stat = "identity", width = 25, position = position_stack(reverse = TRUE)) +
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), expand=c(0,0)) +
+  scale_fill_manual(values = c("darkorchid4","dodgerblue1", "darkorchid2", "dodgerblue3"))+
+  coord_flip()+ 
+  scale_y_continuous(position = 'left', expand=c(0,0), n.breaks = 3) +
+  labs(title = "", y = "Mn fractions \n F2+F3 (µg/g)", x = "") + 
+  theme_classic(base_size = journal_font_size) +
+  theme(legend.position="none", 
+        axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), 
+        plot.margin = unit(c(0,0,0.5,-0.55), "cm"),
+        axis.text = element_text(size = journal_axis_text_size),
+        axis.title = element_text(size = journal_title_size, face="bold"),
+        panel.background = element_blank(),
+        plot.background = element_blank())
+
+# Recreate diatom plots with journal formatting using filtered_diaL
+Stau_j <- ggplot(filtered_diaL, aes(y=Staurosira_construens, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "brown")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), expand=c(0,0)) +
+  scale_y_continuous(position = 'right', expand=c(0,0), breaks = c(0, 25, 50, 75)) +
+  coord_flip()+ 
+  theme_classic(base_size = journal_font_size) +
+  labs(title = " ", y = "Staurosira\nconstruens (%)", x = " ") +
+  theme(legend.position="none", 
+        axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),
+        plot.margin = unit(c(0,0,0.5,-0.3), "cm"),
+        axis.text = element_text(size = journal_axis_text_size),
+        axis.title = element_text(size = journal_title_size, face="bold"),
+        panel.background = element_blank(),
+        plot.background = element_blank())
+
+Amph_j <- ggplot(filtered_diaL, aes(y=Amphora_indistinta, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "brown")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), expand=c(0,0)) +
+  scale_y_continuous(position = 'left', expand=c(0,0), n.breaks = 3) +
+  coord_flip()+ 
+  theme_classic(base_size = journal_font_size) +
+  labs(title = " ", y = "Amphora\nindistinta (%)", x = " ") +
+  theme(legend.position="none", 
+        axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), 
+        plot.margin = unit(c(0,0,0.5,-0.3), "cm"),
+        axis.text = element_text(size = journal_axis_text_size),
+        axis.title = element_text(size = journal_title_size, face="bold"),
+        panel.background = element_blank(),
+        plot.background = element_blank())
+
+Pant_j <- ggplot(filtered_diaL, aes(y=Pantosekiella_ocellata, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "brown")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), expand=c(0,0)) +
+  scale_y_continuous(position = 'right', expand=c(0,0), n.breaks = 3) +
+  coord_flip()+ 
+  theme_classic(base_size = journal_font_size) +
+  labs(title = " ", y = "Pantosekiella\nocellata (%)", x = " ") +
+  theme(legend.position="none", 
+        axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),
+        plot.margin = unit(c(0,0,0.5,-0.3), "cm"),
+        axis.text = element_text(size = journal_axis_text_size),
+        axis.title = element_text(size = journal_title_size, face="bold"),
+        panel.background = element_blank(),
+        plot.background = element_blank())
+
+Steph_j <- ggplot(filtered_diaL, aes(y=Stephanodiscus_minutulus, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "blue")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), expand=c(0,0)) +
+  scale_y_continuous(position = 'left', expand=c(0,0), breaks = c(0, 25, 50, 75)) +
+  coord_flip()+ 
+  theme_classic(base_size = journal_font_size) +
+  labs(title = " ", y = "Stephanodiscus\nminutulus (%)", x = " ") +
+  theme(legend.position="none", 
+        axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),
+        plot.margin = unit(c(0,0,0.5,-0.3), "cm"),
+        axis.text = element_text(size = journal_axis_text_size),
+        axis.title = element_text(size = journal_title_size, face="bold"),
+        panel.background = element_blank(),
+        plot.background = element_blank())
+
+# Recreate pollen plots with journal formatting
+pollCombo_j <- ggplot()+
+  geom_col(data = Meer_pollen_stacked, aes(y= value, x=Meer_pollen_stacked$`Age varve BC`, fill=factor(variable)), stat = "identity", width = 20, alpha = 0.4)+
+  geom_bar(data = pollen_stacked_per, aes(y= value, x=pollen_stacked_per$age, fill=factor(variable)), stat = "identity", width = 30)+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), expand=c(0,0)) +
+  theme_classic(base_size = journal_font_size) +
+  scale_fill_manual(values = c("springgreen3","goldenrod","goldenrod3","springgreen"))+
+  coord_flip()+ 
+  scale_y_continuous(position = 'right', expand=c(0,0), breaks = c(25, 75), sec.axis = sec_axis(~ . *1, name = "\n    AP/NAP", breaks = c(25, 75))) +
+  labs(title = " ", y = " \n AP/NAP", x = " ") +
+  theme(legend.position="none", 
+        axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),
+        plot.margin = unit(c(0,0,0.5,-0.2), "cm"), 
+        axis.text = element_text(size = journal_axis_text_size),
+        axis.title = element_text(size = journal_title_size, face="bold"),
+        panel.background = element_blank(),
+        plot.background = element_blank())
+
+PinusCombo_j <- ggplot()+
+  geom_col(data = MeerPinus, aes(y= MeerPinus$`Pinus%`, x=MeerPinus$`Age varve yr BP`), fill="forestgreen", stat = "identity", width = 20, alpha = 0.4 )+
+  geom_bar(data=Trees , aes(y= Pinus, x= age), stat = "identity", width = 30, fill = "darkseagreen4")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2),expand=c(0,0)) +
+  scale_y_continuous(position = 'left', expand=c(0,0), n.breaks = 3, sec.axis = sec_axis(~ . *1, name = "Pinus")) +
+  theme_classic(base_size = journal_font_size) +
+  coord_flip()+
+  labs(title = " ", y = "Pinus", x = " ") +
+  theme(legend.position="none", 
+        axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),
+        plot.margin = unit(c(0,0,0.5,-0.25), "cm"),
+        axis.text = element_text(size = journal_axis_text_size),
+        axis.title = element_text(size = journal_title_size, face="bold"),
+        panel.background = element_blank(),
+        plot.background = element_blank())
+
+BetulaCombo_j <- ggplot()+
+  geom_col(data = MeerBetula, aes(y= MeerBetula$`Betula%`, x=MeerBetula$`Age varve yr BP`), fill="burlywood", stat = "identity", width = 20, alpha = 0.4 )+
+  geom_bar(data=Trees , aes(y= Betula, x= age), stat = "identity", width = 30, fill = "burlywood4")+
+  scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2),expand=c(0,0)) +
+  scale_y_continuous(position = 'left', expand=c(0,0), breaks = c(0, 25, 50), sec.axis = sec_axis(~ . *1, name = "Betula", breaks = c(0, 25, 50))) +
+  theme_classic(base_size = journal_font_size) +
+  coord_flip()+
+  labs(title = " ", y = "\n Betula", x = " ") +
+  theme(legend.position="none", 
+        axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),
+        plot.margin = unit(c(0,0,0.5,-0.25), "cm"),
+        axis.text = element_text(size = journal_axis_text_size),
+        axis.title = element_text(size = journal_title_size, face="bold"),
+        panel.background = element_blank(),
+        plot.background = element_blank())
+
+Juniperus_j <- ggplot(Trees , aes(y= Trees$Juniperus, x= age))+
+  geom_bar(stat = "identity", width = 30, fill = "palegreen4")+
+  scale_x_reverse(limits = c(limYmax, limYmin), expand=c(0,0), position = "top", breaks = NULL) +
+  scale_y_continuous(position = 'left',expand=c(0,0), breaks = c(1)) +
+  theme_classic(base_size = journal_font_size) +
+  coord_flip()+
+  labs(title = " ", y = "Juniperus", x = " ") +  # Remove x axis label
+  theme(legend.position="none", 
+        plot.margin = unit(c(0,-0.05,0.5,0), "cm"),  # Negative right margin
+        axis.text.x.bottom = element_text(size = journal_axis_text_size),  # Juniperus values (after flip)
+        axis.text.y = element_text(size = journal_axis_text_size),  # Keep age axis text (left)
+        axis.text.x.top = element_blank(),   # Remove top axis text/numbers
+        axis.ticks.x.top = element_blank(), 
+        axis.title.x.bottom = element_text(size = journal_title_size, face="bold"),  # Juniperus label (after flip)
+        axis.title.y = element_text(size = journal_title_size, face="bold"),  # Age label (left)
+        axis.title.x.top = element_blank(),  # Remove top axis title
+        axis.line.x.top = element_blank(),   # Remove top axis line
+        panel.background = element_blank(),
+        plot.background = element_blank())
+
+# Create zone legend strip to replace top axis
+zones_strip_j <- ggplot() +
+  annotate("rect", ymin = 0, ymax = 0.8, xmin = 15342, xmax = 14444, 
+           fill = "lightblue", color = "black", size = 0.2) +  # Pleniglacial
+  annotate("text", y = 0.4, x = (15342 + 14444)/2, label = "Pleniglacial", 
+           size = 2, angle = 270, hjust = 0.5) +
+  
+  annotate("rect", ymin = 0, ymax = 0.8, xmin = 14444, xmax = 13611, 
+           fill = "lightcoral", color = "black", size = 0.2) +  # Bølling
+  annotate("text", y = 0.4, x = (14444 + 13611)/2, label = "Bølling", 
+           size = 2, angle = 270, hjust = 0.5) +
+  
+  annotate("rect", ymin = 0, ymax = 0.8, xmin = 14070 , xmax = 14016, 
+           fill = "white", color = "black", size = 0.2, alpha = 0.2) +  # Oldest Dryas
+  annotate("text", y = 0.4, x = ((14070 + 14016)/2)-20, label = "Oldest\nDryas", 
+           size = 1, angle = 0, hjust = 0.5) +
+  
+  annotate("rect", ymin = 0, ymax = 0.8, xmin = 13906, xmax = 13611, 
+           fill = "white", color = "black", size = 0.2, alpha = 0.2) +  # Older Dryas
+  annotate("text", y = 0.4, x = (13906 + 13611)/2, label = "Older\nDryas", 
+           size = 1, angle = 0, hjust = 0.5) +
+  
+  annotate("rect", ymin = 0, ymax = 0.8, xmin = 13611, xmax = 12727, 
+           fill = "lightsalmon", color = "black", size = 0.2) +  # Allerød
+  annotate("text", y = 0.4, x = (13611 + 12727)/2, label = "Allerød", 
+           size = 2, angle = 270, hjust = 0.5) +
+  
+  annotate("rect", ymin = 0, ymax = 0.8, xmin = 13011, xmax = 13011, 
+           fill = "lightgray", color = "black", size = 0.2) +  # Lachersee tephra
+  annotate("text", y = 0.4, x = 12970, label = "LST", 
+           size = 2, angle = 0, hjust = 0.5) +
+  
+  annotate("rect", ymin = 0, ymax = 0.8, xmin = 12727, xmax = 11625, 
+           fill = "lightblue", color = "black", size = 0.2) +  # Younger Dryas
+  annotate("rect", ymin = 0, ymax = 0.8, xmin = 12540, xmax = 11850, 
+           fill = "white", alpha= 0.4, color = "black", linetype = "dashed", size = 0.3) +  # Hiatus
+  annotate("text", y = 0.55, x = (12540 + 11850)/2, label = "Hiatus", 
+           size = 2, angle = 270, hjust = 0.5) +
+  annotate("text", y = 0.25, x = (12727 + 11625)/2, label = "Younger Dryas", 
+           size = 2, angle = 270, hjust = 0.5) +
+  scale_x_reverse(limits = c(limYmax, limYmin), expand=c(0,0)) +
+  scale_y_continuous(limits = c(0, 1), expand=c(0,0)) +
+  coord_flip() +
+  theme_void() +
+  theme(plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = unit(c(0,0,0.5,-0.2), "cm"))  # Negative left margin to move closer
+```
+
+# Figure 2 combined - Journal Format (1/2 A4)
+
+```{r}
+# Journal format dimensions for 1/2 A4 page width (180mm = double column standard)
+# Resolution: 300 DPI for publication quality
+# 180mm = 7.09 inches = 2126 px at 300 DPI
+# Height: 120mm = 4.72 inches = 1417 px at 300 DPI
+
+# Total plots: 19 + 1 zone strip (3 HSI + 4 Pigments + 3 PCA + 1 Mn + 4 Diatoms + 4 Pollen + 1 zones)
+# All plots have equal width, zone strip is narrower
+base_grid <- plot_grid(
+  RABD620_j, RABD660_j, RABD845_j,  
+  Cyanos_j, TChls_j, Oke_j, Fuco_j,
+  PigCom1_j, PigCom3_j, PigCom2_j, 
+  Mnseq23_j,
+  Stau_j, Amph_j, Pant_j, Steph_j,
+  pollCombo_j, PinusCombo_j, BetulaCombo_j, Juniperus_j, zones_strip_j,
+  nrow = 1, 
+  align = "h",
+  #rel_widths = c(rep(1, 19), 0.15),  # All plots equal width, zone strip narrow
+  rel_widths = c(0.75, 0.4, 0.4,
+                 0.4, 0.4, 0.4, 0.4,
+                 0.4, 0.4, 0.4, 
+                 0.4, 
+                 0.4, 0.4, 0.4, 0.4,
+                 0.4, 0.4, 0.4, 0.35, 0.15),  # zone strip at end with minimal width
+  axis = "tb"
+)
+
+# Add pollen zone lines over the entire combined plot
+# The plots use coord_flip() or scale_y_reverse(), with age range from limYmax to limYmin
+# We need to calculate positions accounting for plot margins and the panel area
+# Since expand=c(0,0) is used, the age scale spans exactly from limYmin to limYmax
+
+# Age boundaries for climate zones
+zone_ages <- c(15342, 14444, 14070, 14015, 13907, 13611, 12727, 11625)
+lst_age <- 13011
+
+# Function to convert age to normalized position (0 at limYmin/top, 1 at limYmax/bottom)
+# Since plots are displayed with age decreasing upward (young at top, old at bottom)
+age_to_y <- function(age) {
+  1 - (age - limYmin) / (limYmax - limYmin)
+}
+
+zone_y <- sapply(zone_ages, age_to_y)
+lst_y <- age_to_y(lst_age)
+
+# Account for plot margins - the actual plot area doesn't span full 0-1
+# Bottom margin is 0.5cm, top margin is 0
+# Estimate: plot area spans from ~0.04 to ~0.98 of figure height
+margin_bottom <- 0.1015
+margin_top <- 0.086
+plot_height <- 1 - margin_bottom - margin_top
+
+# Adjust y positions to plot area
+zone_y_adj <- margin_bottom + zone_y * plot_height
+lst_y_adj <- margin_bottom + lst_y * plot_height
+
+# Add zone lines as dashed lines across entire plot
+Fig2_journal <- ggdraw(base_grid) +
+  # Pleniglacial boundary
+  # draw_line(x = c(0.03, 0.975), y = c(zone_y_adj[1], zone_y_adj[1]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
+  # Meiendorf boundary
+  draw_line(x = c(0.05, 0.97), y = c(zone_y_adj[2], zone_y_adj[2]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
+  # Oldest Dryas boundary
+  draw_line(x = c(0.05, 0.97), y = c(zone_y_adj[3], zone_y_adj[3]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
+  # Bølling boundary  
+  draw_line(x = c(0.05, 0.97), y = c(zone_y_adj[4], zone_y_adj[4]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
+  #  # Older Drays boundary  
+  draw_line(x = c(0.05, 0.97), y = c(zone_y_adj[5], zone_y_adj[5]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
+  # Allerød boundary
+  draw_line(x = c(0.05, 0.97), y = c(zone_y_adj[6], zone_y_adj[6]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
+  # Younger Dryas boundary
+  draw_line(x = c(0.05, 0.97), y = c(zone_y_adj[7], zone_y_adj[7]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
+  # LST marker (Lachersee tephra)
+  draw_line(x = c(0.05, 0.97), y = c(lst_y_adj, lst_y_adj), color = "gray30", size = 0.3, linetype = "solid", alpha = 0.5) +
+  # Add spanning label for HZM Pollen across pollCombo, Pinus, Betula, Juniperus
+  # Pollen plots are at positions 16-19 out of 20 total plots
+  # Calculate center: (0.75 + 11*0.4) + (4*0.4)/2 = 5.55/8.3 ≈ 0.668
+  draw_label("HZM Pollen (%)", x = 0.9, y = 0.02, size = journal_title_size, fontface = "bold", hjust = 0.5, vjust = 0) +
+  draw_line(x = c(0.79,0.97), y = 0.038, color = "gray30", size = 0.3, linetype = "solid", alpha = 1) +
+  # Add spanning label for MER Pollen on top axis (secondary axis position)
+  draw_label("MER Pollen (%)", x = 0.865, y = 0.98, size = journal_title_size, fontface = "bold", hjust = 0.5, vjust = 1) +
+ draw_line(x = c(0.79,0.94), y = 0.963, color = "gray30", size = 0.3, linetype = "solid", alpha = 1) 
+
+# Save as high-resolution PNG with transparent background
+png(filename = timestamp_filename("../figs", "Figure2_journal_halfA4"),
+    width = 2126, height = 1417, units = "px", pointsize = journal_font_size, res=300, bg = "transparent")
+Fig2_journal
+dev.off()
+
+# Also save as PDF for vector graphics
+# pdf(file = timestamp_filename("../figs", "Figure2_journal_halfA4", extension = ".pdf"),
+#     width = 7.09, height = 4.72)  # inches at 180mm x 120mm
+# Fig2_journal
+# dev.off()
+
+# Display the figure
+Fig2_journal
+```

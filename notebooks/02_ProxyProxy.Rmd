@@ -1,0 +1,266 @@
+---
+title: "Proxy-proxy calibration"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Install and load packages
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#install.packages("pacman")
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(pacman)
+
+pacman::p_unload(pacman::p_loaded(), character.only = TRUE)
+
+pacman::p_load("readxl","dplyr","tidyr","openxlsx","car","rstatix", "DT", "data.table", "ipred", "EnvStats")#"ipred", "magicaxis", "mvnormtest", ,,"car", )
+```
+
+```{r}
+Scripts  <- file.path("../notebooks/Functions", fsep="/")
+#Out.Dir  <- file.path(Main.Path,"output" , fsep="/")
+
+# Needed Scripts
+source(file.path(Scripts, "series5_functions.R" , fsep="/" ))
+source(file.path(Scripts, "user_functions.r", fsep="/" ))
+source(file.path(Scripts, "utility_functions.r", fsep="/" ))
+```
+
+```{r}
+HSI_raw <- read_excel("../data/SourceData/HSI_composite.xlsx")
+HZM_calib <- read_excel("../data/SourceData/HZM_calib.xlsx", sheet = "for_LM")
+Data <- select(HZM_calib, 1:2, 5:6)
+colnames(Data) <- c('Chl', 'Bphe', 'RABD670', 'RABD845')
+```
+
+# Normality tests
+
+As we want to use linear regression to calibrate out HSI data, we need to ensure that the data used for calibration are normally distributed. Therefore, we first use Shapiro-Wilk test to test the normality of the data.
+
+```{r}
+apply(Data,2,shapiro.test)
+```
+
+As the p-values are below 0.05, the null hypothesis of a normal distribution is falsified = the data are not normally distributed. Thus, we can try to transform the data (standardization, log transformation, square or cube root transformation.
+
+We can also display the data distribution using histograms of Q-Q plots for further exploration.
+
+```{r}
+par(mfrow=c(2,4)) 
+hist(Data$Chl, col='green4')
+hist(Data$RABD670, col='forestgreen')
+hist(Data$Bphe, col='purple')
+hist(Data$RABD845, col='darkred')
+qqnorm(Data$Chl)
+qqline(Data$Chl)
+qqnorm(Data$RABD670)
+qqline(Data$RABD670)
+qqnorm(Data$Bphe)
+qqline(Data$Bphe)
+qqnorm(Data$RABD845)
+qqline(Data$RABD845)
+```
+
+## Data transformation to reach normality
+
+### Square root
+
+```{r}
+root2_Data <- Data^(1/2)
+apply(root2_Data,2,shapiro.test)
+```
+
+```{r}
+par(mfrow=c(2,4)) 
+hist(root2_Data$Chl, col='green4')
+hist(root2_Data$RABD670, col='forestgreen')
+hist(root2_Data$Bphe, col='purple')
+hist(root2_Data$RABD845, col='darkred')
+qqnorm(root2_Data$Chl)
+qqline(root2_Data$Chl)
+qqnorm(root2_Data$RABD670)
+qqline(root2_Data$RABD670)
+qqnorm(root2_Data$Bphe)
+qqline(root2_Data$Bphe)
+qqnorm(root2_Data$RABD845)
+qqline(root2_Data$RABD845)
+```
+
+This transformation is not improving the normality
+
+### Log transformation
+
+```{r}
+log_Data <- log(Data)
+apply(log_Data,2,shapiro.test)
+```
+
+```{r}
+log_Data <- log(Data)
+
+par(mfrow=c(2,4)) 
+hist(log_Data$Chl, col='green4')
+hist(log_Data$RABD670, col='forestgreen')
+hist(log_Data$Bphe, col='purple')
+hist(log_Data$RABD845, col='darkred')
+qqnorm(log_Data$Chl)
+qqline(log_Data$Chl)
+qqnorm(log_Data$RABD670)
+qqline(log_Data$RABD670)
+qqnorm(log_Data$Bphe)
+qqline(log_Data$Bphe)
+qqnorm(log_Data$RABD845)
+qqline(log_Data$RABD845)
+```
+
+None of the transformation helps to reach normality, thus we need to identify the outliers and remove them from out calibration dataset
+
+## Outliers identification and removal
+
+```{r}
+z_scores <- as.data.frame(sapply(Data, function(Data) (abs(Data-mean(Data))/sd(Data))))
+#only keep rows in dataframe with all z-scores less than absolute value of 3 
+no_outliers <- z_scores[!rowSums(z_scores>3), ]
+```
+
+```{r}
+apply(no_outliers,2,shapiro.test)
+```
+
+There are no outliers in the data using the z-score outlier detection.
+
+We check in Q-Q plots for the normality and outliers
+
+```{r}
+par(mfrow=c(2,2)) 
+
+qqPlot(Data$Chl)
+qqPlot(Data$Bphe)
+qqPlot(Data$RABD670)
+qqPlot(Data$RABD845)
+```
+
+From the Q-Q plots, there might be 3-7 outliers in each of the dataset. Thus we test for those using Rosner test:
+
+```{r}
+# identify_outliers(
+#   data = Data,
+#   variable = "Chl" #"Bhpe" #"RABD670" #"RABD845"
+# )
+
+library("EnvStats")
+# Rosner test
+testChl <- rosnerTest(Data$Chl, k = 7)
+testBphe <- rosnerTest(Data$Bphe, k = 7)
+test670 <- rosnerTest(Data$RABD670, k = 7)
+test845 <- rosnerTest(Data$RABD845,k = 7)
+
+results <- cbind(testChl, testBphe, test670, test845)
+datatable(results)
+```
+
+Base on the Rosner's test, there are no outliers found and the data are normally distributed. Further, as the HSI data were used to select the calibration points, and this selection was designed to be a normally distributed, we assume that if the measured data are correlated with the normally distributed HSI selection, we can conduct linear regression to model the concentration values in the entire HSI dataset.
+
+Thus, we lastly examine the correlation of the RADBs with the spectrophotometer data to confirm the data suitability for LRM.
+
+```{r}
+cor(Data)
+```
+
+# Linear regression model
+
+```{r}
+type <- c('Standard')
+```
+
+## LRM of the Chlorophylls
+
+```{r}
+xlim <- c(min(Data[,3]),max(Data[,3]))
+ylim <- c(min(Data[,1]),max(Data[,1]))
+ylab <- c("TChl [μg/g]")
+xlab <- c("RABD (671 nm) - wet")
+
+
+# Function to do and plot the simple linear regression
+modelChla <- plotreg(Xvect = Data[,3],
+                 Yvect = Data[,1],
+                  type = type,
+                  xlim = xlim,
+                  ylim = ylim,
+                  xlab = xlab,
+                  ylab = ylab,
+                  plot = TRUE)
+
+
+# check residuals for normal distribution
+stdresChla <- standardize.data(modelChla$residuals)
+stdresChla <- as.vector(stdresChla[,1])
+
+```
+
+## LRM of the Bacteriopheophytin-a
+
+```{r}
+#plot options
+#####################################
+xlim <- c(min(Data[,4]),max(Data[,4]))
+ylim <- c(min(Data[,2]),max(Data[,2]))
+ylab <- c("Bphe-a [μg/g]")
+xlab <- c("RABD (845 nm) - wet")
+
+# Function to do and plot the simple linear regression
+modelBphe <- plotreg(Xvect = Data[,4],
+                 Yvect = Data[,2],
+                  type = type,
+                  xlim = xlim,
+                  ylim = ylim,
+                  xlab = xlab,
+                  ylab = ylab,
+                  plot = TRUE)
+
+# check residuals for normal distribution
+stdresBphe <- standardize.data(modelBphe$residuals)
+stdresBphe <- as.vector(stdresBphe[,1])
+
+
+
+```
+
+```{r}
+LRMeq <- as.data.frame(cbind("Chla" = as.numeric(modelChla$coefficients), "Bphe" = as.numeric(modelBphe$coefficients)))
+#Eq <- as.data.frame(transpose(LRMeq))
+colnames(LRMeq) <- c("Chla", "Bphe")
+row.names(LRMeq) <- c("intercept", "slope")
+ 
+
+modelBphe
+
+```
+
+# Apply the LRM to the HSI dataset
+
+```{r}
+calibChl <- function(x) {
+   LRMeq[2,1] * x + LRMeq[1,1] 
+}
+
+HSI_raw$Chla_calibrated <- as.numeric(lapply(HSI_raw$RABD670, calibChl))
+
+calibBphe <- function(x) {
+   LRMeq[2,2] * x + LRMeq[1,2] 
+}
+
+HSI_raw$Bphe_calibrated <- as.numeric(lapply(HSI_raw$RABD845, calibBphe))
+
+HSI_calibrated <- as.data.frame(HSI_raw)
+```
+
+Saving the data
+
+```{r}
+write.xlsx(HSI_raw, "../data/HZM_HSI_calibrated.xlsx", rowNames = FALSE)
+```
