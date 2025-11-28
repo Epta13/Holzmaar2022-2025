@@ -39,7 +39,7 @@ We are loading the XRF data from ITRAX to constrain the lithology and sediment c
 
 ```{r}
 HZM_XRF <- read_excel("../data/SourceData/HZM19_LG_section_XRF.xlsx")
-HZM_HR_all <- read_excel("../data/HZM_HSI-XRF_1mm_calibrated_napari_2025-01-13_V3.xlsx")
+HZM_HR_all <- read_excel("../data/SourceData/HZM_HSI-XRF_1mm_calibrated_napari_2025-01-13_V3.xlsx")
 ```
 
 # Cleaning the data
