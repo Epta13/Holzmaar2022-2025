@@ -1,1 +1,53 @@
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# R files
+.Rhistory
+.RData
+.Rproj.user
+*.Rproj.user/
+
+# R Environment Variables
+.Renviron
+
+# RStudio files
+*.Rproj
+
+# Temporary files
+*~
+*.swp
+*.swo
+
+# R Markdown HTML outputs (regenerated from .Rmd files)
+*.nb.html
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.ipynb_checkpoints/
+
+# Conda
+.conda/
+
+# Renku
+.renku/
+
+# Workflows (if using GitHub Actions separately)
+workflows/
+
+# Large data files (optional - uncomment if data is stored elsewhere)
+# data/*.csv
+# data/*.xlsx
+
+# Generated figures (optional - uncomment if figures are regenerated)
+# figs/*.png
+# figs/*.pdf
+# figs/*.rds
