@@ -8,26 +8,19 @@ A comprehensive R-based analytical framework for high-resolution paleoclimate re
 
 ---
 
-## 🎯 Project Overview
+## Project Overview
 
 **Holzmaar** is a small volcanic crater lake in the Volcanic Eifel region (Rhineland-Palatinate, Germany) with sediments preserving a continuous paleoclimate record spanning ~23,200 years. This project develops and documents a reproducible analytical pipeline for multi-proxy paleoenvironmental reconstruction, serving as both a scientific contribution and a methodological reference for reproducible paleoclimate research.
 
-### Key Features
-- ✅ **High-resolution multi-proxy dataset** (0-23,200 years BP)
-- ✅ **Fully reproducible** R-based analysis pipeline (14 documented notebooks)
-- ✅ **Publication-ready figures** with automated generation
-- ✅ **Open data & code** for transparency and reusability
-- ✅ **Modular workflow** allowing selective execution and adaptation
 
----
-
-## 📊 Dataset & Data Sources
+## Dataset & Data Sources
 
 ### Primary Data (Holzmaar Core)
 | Proxy | File | Resolution | N Observations | Description |
 |-------|------|-----------|---|---|
 | **XRF** | `HZM_xrf_raw_measurements.xlsx` | 1 mm | ~4,500 | Elemental geochemistry (30+ elements) |
-| **HSI** | `HZM_hsi_xrf_calibrated_1mm.xlsx` | 1 mm | ~4,500 | Pigments + calibrated XRF composite |
+| **HSI (Full-Resolution)** | `HZM_hsi_composite.xlsx` | 80 μm | ~45,000 | Full hyperspectral imaging dataset |
+| **HSI-XRF (Calibrated)** | `HZM_hsi_xrf_calibrated_1mm.xlsx` | 1 mm | ~4,500 | Pigments + calibrated XRF composite |
 | **Redox** | `HZM_sequential_extraction_fe_mn_p.xlsx` | Low-res | ~500 | Fe/Mn/P speciation & redox cycling |
 | **Pollen** | `holzmaar_pollen_records.csv` | ~30 yr | ~500 | Pollen stratigraphy (measured) |
 | **Pollen (modelled)** | `HolzPol_predicted_13258-10995.csv` | ~100 yr | ~2,000 | Gap-filling via calibration |
@@ -41,7 +34,7 @@ A comprehensive R-based analytical framework for high-resolution paleoclimate re
 - **`insolation_data.csv`**: Orbital forcing calculations
 - **Meerfelder Maar records**: Reference pollen sequences for calibration
 
-**→ See [ZENODO_DATASET_DESCRIPTION.md](ZENODO_DATASET_DESCRIPTION.md) for complete metadata**
+**→ See [Zenodo Repository](https://zenodo.org/records/18429717) for complete dataset metadata and documentation** (DOI: [10.5281/zenodo.18429716](https://doi.org/10.5281/zenodo.18429716))
 
 ---
 
@@ -110,7 +103,7 @@ The workflow is organized into a **modular, reproducible pipeline**, ensuring tr
 
 ---
 
-## 📖 Data Dictionary & Proxy Significance
+## Data Dictionary & Proxy Significance
 
 ### **Geochemical Proxies (XRF)**
 | Element | Significance | Interpretation |
@@ -127,18 +120,16 @@ The workflow is organized into a **modular, reproducible pipeline**, ensuring tr
 | **RABD 845** | Bacteriopheophytin-a | Photic zone euxinia, anoxia indicators |
 | **Betula/Pinus Pollen** | Reforestation | Temperature recovery, climate amelioration |
 | **Poaceae Pollen** | Open landscape | Cold/dry periods, reduced forest cover |
-| **Diatom Assemblages** | pH, temperature | Lake conditions, paleoclimate reconstruction |
+| **Diatom Assemblages** | primary producers community and nutrient availability| Lake conditions, paleoenvironment reconstruction |
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 Holzmaar2022-2025/
 │
 ├── README.md                              # This file
-├── ZENODO_DATASET_DESCRIPTION.md         # Complete dataset metadata
-├── ZENODO_SUBMISSION_FORMS.md            # Zenodo submission details
 ├── LICENSE                                # CC-BY-4.0 License
 │
 ├── notebooks/                             # Analysis workflows
@@ -198,7 +189,7 @@ Holzmaar2022-2025/
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### **1. Clone Repository**
 ```bash
@@ -208,7 +199,16 @@ cd Holzmaar2022-2025
 
 ### **2. Set Up Environment**
 
-**Option A: Conda (Recommended)**
+**☁️ Option 0: Renku (Browser-Based | No Installation Required)**
+Click here to launch the project directly in your browser with all dependencies pre-configured:
+
+[![Renku Badge](https://renkulab.io/badges/projects.svg)](https://renkulab.io/p/snsf-anoxia-project/holzmaar)
+
+**[Open in Renku](https://renkulab.io/p/snsf-anoxia-project/holzmaar)** — Reproducible data analysis platform. All notebooks run immediately in the cloud without installing anything locally.
+
+---
+
+**Option A: Conda (Recommended for Local Installation)**
 ```bash
 conda env create -f environment.yml
 conda activate holzmaar
@@ -256,7 +256,7 @@ ls data/*.xlsx              # Processed datasets
 
 ---
 
-## ⏱️ Execution Order & Dependencies
+##  Execution Order & Dependencies
 
 | Phase | Notebooks | Dependencies | Status |
 |-------|-----------|--------------|--------|
@@ -269,7 +269,7 @@ ls data/*.xlsx              # Processed datasets
 
 ---
 
-## 📦 Technical Requirements
+## Technical Requirements
 
 ### **R & Packages**
 - **R:** ≥ 4.0.0
@@ -290,18 +290,17 @@ ls data/*.xlsx              # Processed datasets
 
 ---
 
-## 📚 Documentation
+## Documentation
 
 | File | Purpose | Audience |
 |------|---------|----------|
 | **[notebooks/README.md](notebooks/README.md)** | Complete workflow guide | Researchers, developers |
 | **[notebooks/QUICKSTART.md](notebooks/QUICKSTART.md)** | 5-minute setup guide | New users |
-| **[ZENODO_DATASET_DESCRIPTION.md](ZENODO_DATASET_DESCRIPTION.md)** | Full dataset metadata | Data repository curators |
-| **[ZENODO_SUBMISSION_FORMS.md](ZENODO_SUBMISSION_FORMS.md)** | Zenodo submission details | Open science advocates |
+| **[Zenodo Repository](https://zenodo.org/records/18429717)** | Complete dataset metadata | Data repository & open science |
 
 ---
 
-## 🔄 Reproducibility & Open Science
+##  Reproducibility & Open Science
 
 ✅ **100% Reproducible**
 - All code version-controlled with git
@@ -322,7 +321,7 @@ ls data/*.xlsx              # Processed datasets
 
 ---
 
-## 🤝 Contributing
+##  Contributing
 
 Contributions welcome! Please:
 
@@ -350,7 +349,39 @@ This project is licensed under the **Creative Commons Attribution 4.0 Internatio
 
 ---
 
-## 📖 Citation
+## � Data Sources & References
+
+### Primary Data (Holzmaar Core)
+
+**Holzmaar Pollen Records:**
+Litt, T.: Pollen profile THZM4AB, Holzmaar, Germany, https://doi.org/10.1594/PANGAEA.739893, 2010.
+
+### External Comparative Data
+
+**Meerfelder Maar Reference Pollen:**
+Litt, T. and Stebich, M.: Pollen counts of sediment core MFM6, https://doi.org/10.1594/PANGAEA.59877, 2001.
+
+**Gerzensee Temperature Record (Alpine Lake, Switzerland):**
+Lotter, A. F., Heiri, O., Brooks, S., van Leeuwen, J. F., Eicher, U., and Ammann, B.: Rapid summer temperature changes during Termination 1a: high-resolution multi-proxy climate reconstructions from Gerzensee (Switzerland), *Quaternary Science Reviews*, **36**, 103–113, https://doi.org/10.1016/j.quascirev.2010.06.022, 2012.
+
+**Egelsee Temperature Record (German Alps):**
+Larocque-Tobler, I., Heiri, O., and Wehrli, M.: Late Glacial and Holocene temperature changes at Egelsee, Switzerland, reconstructed using subfossil chironomids, *Journal of Paleolimnology*, **43**, 649–666, https://doi.org/10.1007/s10933-009-9358-z, 2009.
+
+**GDGT Temperature Calibration:**
+Zander, P. D., Böhl, D., Sirocko, F., Auderset, A., Haug, G. H., and Martínez-García, A.: Reconstruction of warm-season temperatures in central Europe during the past 60,000 years from lacustrine branched glycerol dialkyl glycerol tetraethers (brGDGTs), *Climate of the Past*, **20**, 841–864, https://doi.org/10.5194/cp-20-841-2024, 2024.
+
+**NGRIP Ice Core (Global Climate Reference):**
+NGRIP Members: High-resolution record of Northern Hemisphere climate extending into the last interglacial period, *Nature*, **431**, 147–151, https://doi.org/10.1038/nature02805, 2004.
+
+**Insolation Data (Orbital Forcing):**
+Laskar, J., Robutel, P., Joutel, F., Gastineau, M., Correia, A. C., and Levrard, B.: A long-term numerical solution for the insolation quantities of the Earth, *Astronomy & Astrophysics*, **428**, 261–285, https://doi.org/10.1051/0004-6361:20041335, 2004.
+
+**Global Holocene Paleotemperature Database:**
+Kaufman, D., McKay, N., Routson, C., Erb, M., Davis, B., Heiri, O., Jaccard, S., Tierney, J., Dätwyler, C., Axford, Y., Brussel, T., Cartapanis, O., Chase, B., Dawson, A., de Vernal, A., Engels, S., Jonkers, L., Marsicek, J., Moffa-Sánchez, P., Morrill, C., Orsi, A., Rehfeld, K., Saunders, K., Sommer, P. S., Thomas, E., Tonello, M., Tóth, M., Vachula, R., Andreev, A., Bertrand, S., Biskaborn, B., Bringué, M., Brooks, S., Caniupán, M., Chevalier, M., Cwynar, L., Emile-Geay, J., Fegyveresi, J., Feurdean, A., Finsinger, W., Fortin, M.-C., Foster, L., Fox, M., Gajewski, K., Grosjean, M., Hausmann, S., Heinrichs, M., Holmes, N., Ilyashuk, B., Ilyashuk, E., Juggins, S., Khider, D., Koinig, K., Langdon, P., Larocque-Tobler, I., Li, J., Lotter, A., Luoto, T., Mackay, A., Magyari, E., Malevich, S., Mark, B., Massaferro, J., Montade, V., Nazarova, L., Novenko, E., Pařil, P., Pearson, E., Peros, M., Pienitz, R., Płóciennik, M., Porinchu, D., Potito, A., Rees, A., Reinemann, S., Roberts, S., Rolland, N., Salonen, S., Self, A., Seppä, H., Shala, S., St-Jacques, J.-M., Stenni, B., Syrykh, L., Tarrats, P., Taylor, K., van den Bos, V., Velle, G., Wahl, E., Walker, I., Wilmshurst, J., Zhang, E., and Zhilich, S.: A global database of Holocene paleotemperature records, *Scientific Data*, **7**, https://doi.org/10.1038/s41597-020-0445-3, 2020.
+
+---
+
+## �📖 Citation
 
 **For the dataset:**
 ```bibtex
@@ -360,7 +391,7 @@ This project is licensed under the **Creative Commons Attribution 4.0 Internatio
            Multi-proxy Records from a Volcanic Crater Lake, Germany},
   year = {2026},
   publisher = {Zenodo},
-  doi = {[your-zenodo-doi]}
+  doi = {10.5281/zenodo.18429716}
 }
 ```
 
@@ -384,7 +415,7 @@ This project is licensed under the **Creative Commons Attribution 4.0 Internatio
 **Email:** [Your Email]  
 **Affiliation:** [Your Institution]  
 
-For **data questions:** See [ZENODO_DATASET_DESCRIPTION.md](ZENODO_DATASET_DESCRIPTION.md)  
+For **data questions:** See [Zenodo Repository](https://zenodo.org/records/18429717) (DOI: 10.5281/zenodo.18429716)  
 For **analysis questions:** Open an [issue on GitHub](https://github.com/Epta13/Holzmaar2022-2025/issues)  
 For **reproducibility support:** See [notebooks/QUICKSTART.md](notebooks/QUICKSTART.md)
 
@@ -401,4 +432,4 @@ For **reproducibility support:** See [notebooks/QUICKSTART.md](notebooks/QUICKST
 
 **Last Updated:** March 20, 2026  
 **Status:** Publication Ready ✅  
-**DOI:** [Zenodo DOI - add after submission]
+**DOI:** [10.5281/zenodo.18429716](https://doi.org/10.5281/zenodo.18429716)
