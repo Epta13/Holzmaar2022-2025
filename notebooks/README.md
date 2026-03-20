@@ -1,4 +1,4 @@
-# Holzmaar Paper 2025 - Cleaned Notebooks
+# Holzmaar Paper 
 
 This directory contains fully documented, reproducible R notebooks for the Holzmaar paleoclimate and paleoenvironmental reconstruction project.
 
@@ -151,51 +151,6 @@ All notebooks generate output files in `../figs/` and `../data/` directories:
 - `Sequential_Extraction_*_Flipped.png/svg` - Sequential extraction plots
 - Various individual proxy plots
 
-## Code Quality Standards
-
-All cleaned notebooks follow these standards:
-
-✅ **Reproducibility:**
-- All random seeds set explicitly
-- Package versions documented
-- Session info included at end
-
-✅ **Documentation:**
-- Purpose statement at beginning
-- Each section clearly labeled
-- All functions explained
-- Data transformations justified
-
-✅ **Code Style:**
-- Consistent variable naming (snake_case)
-- Comments for complex operations
-- No commented-out code
-- Functions extracted where appropriate
-
-✅ **Error Handling:**
-- Input validation where needed
-- Informative error messages
-- Intermediate checkpoints
-
-✅ **Reproducibility Info:**
-- Session information at end
-- Package versions captured
-- Random seed set (where applicable)
-
-## Common Issues & Solutions
-
-### Missing PC scores error in notebook 05
-- Ensure notebook 04 has exported `XRF_clustered_PC.xlsx`
-- Check that output was saved before running notebook 05
-
-### Variable undefined errors
-- Verify all notebooks in dependency chain have run successfully first
-- Check data file paths relative to notebook location
-
-### AGE vs DEPTH mismatches
-- Use consistent age-depth model column names throughout
-- See column name mapping in individual notebooks
-
 ## Contributing
 
 When making modifications:
@@ -206,8 +161,5 @@ When making modifications:
 
 ## Citation
 
-If using these notebooks or code, please cite the Holzmaar Paper 2025 publication and acknowledge data sources.
+If using these notebooks or code, please cite Zahajská, P., García, M. L., Birlo, S., Lami, A., Stebich, M., Schouten, S. J., Schmidhauser, N. R. M. M., Zolitschka, B., Vogel, H., and Grosjean, M.: A high-resolution perspective on climate drivers of lake stratification and phototrophic community dynamics in Late Glacial Central Europe, EGUsphere [preprint], https://doi.org/10.5194/egusphere-2026-1390, 2026 and acknowledge data sources.
 
-## License
-
-[Specify appropriate license]

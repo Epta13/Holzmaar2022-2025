@@ -349,7 +349,7 @@ This project is licensed under the **Creative Commons Attribution 4.0 Internatio
 
 ---
 
-## � Data Sources & References
+## Data Sources & References
 
 ### Primary Data (Holzmaar Core)
 
@@ -409,11 +409,11 @@ Kaufman, D., McKay, N., Routson, C., Erb, M., Davis, B., Heiri, O., Jaccard, S.,
 
 ---
 
-## 📞 Contact & Support
+## Contact & Support
 
-**Project Lead:** [Your Name]  
-**Email:** [Your Email]  
-**Affiliation:** [Your Institution]  
+**Project Lead:** Petra Zahajská
+**Email:** petra.zahajska.at.unibe.ch 
+**Affiliation:** Institute of Geography & Oeschger Centre for Climate Change Research, University of Bern, Bern, Switzerland
 
 For **data questions:** See [Zenodo Repository](https://zenodo.org/records/18429717) (DOI: 10.5281/zenodo.18429716)  
 For **analysis questions:** Open an [issue on GitHub](https://github.com/Epta13/Holzmaar2022-2025/issues)  
@@ -423,13 +423,14 @@ For **reproducibility support:** See [notebooks/QUICKSTART.md](notebooks/QUICKST
 
 ## 🙏 Acknowledgments
 
-- **Holzmaar core:** [Original core description & dating]
+- **Holzmaar core:** Birlo, S., Tylmann, W., and Zolitschka, B.: Bayesian age–depth modelling applied to varve and radiometric dating to optimize the transfer
+of an existing high-resolution chronology to a new composite sediment profile from Holzmaar (West Eifel Volcanic Field, Germany),
+Geochronology, 5, 65–90, https://doi.org/10.5194/gchron-5-65-2023, 2023.
 - **Reference sites:** Meerfelder Maar, NGRIP, Alpine lakes
-- **Funding:** [Funding agencies if applicable]
+- **Funding:** This works was supported by Swiss National Science Foundation 200020_204220
 - **R Community:** All contributing package developers
 
 ---
 
 **Last Updated:** March 20, 2026  
-**Status:** Publication Ready ✅  
 **DOI:** [10.5281/zenodo.18429716](https://doi.org/10.5281/zenodo.18429716)
