@@ -132,8 +132,8 @@ install.packages(packages)
 
 All input data files must be placed in `../data/` directory relative to notebooks:
 
-- `SourceData/HZM19_LG_section_XRF.xlsx` - ITRAX XRF measurements
-- `HZM_HSI-XRF_1mm_calibrated_napari_2025-01-13_V3.xlsx` - HSI calibrated data
+- `SourceData/HZM_xrf_raw_measurements.xlsx` - ITRAX XRF measurements
+- `SourceData/HZM_hsi_xrf_calibrated_1mm.xlsx` - HSI calibrated data
 - `SourceData/External/csvs/*.csv` - External proxy records
 
 ## Output Files

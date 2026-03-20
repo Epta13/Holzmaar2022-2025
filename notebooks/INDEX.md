@@ -70,8 +70,8 @@ These are ready in the main notebooks/ folder and need to be copied here with te
 
 ### 3. **Verify Data Files**
    Check that `../data/SourceData/` contains:
-   - `HZM19_LG_section_XRF.xlsx`
-   - `HZM_HSI-XRF_1mm_calibrated_napari_2025-01-13_V3.xlsx`
+   - `HZM_xrf_raw_measurements.xlsx`
+   - `HZM_hsi_xrf_calibrated_1mm.xlsx`
    - External proxy CSV files
 
 ### 4. **Execute Test Run**
