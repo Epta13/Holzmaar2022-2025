@@ -2,9 +2,9 @@
 
 A comprehensive R-based analytical framework for high-resolution paleoclimate reconstruction from the Holzmaar volcanic crater lake (Germany). This project integrates X-Ray Fluorescence (XRF), Hyperspectral Imaging (HSI), pollen analysis, and diatom records to investigate the coupling between lacustrine geochemistry and biological productivity during the Late Quaternary, with emphasis on the Late-Glacial transition (ca. 15,000-10,000 BP).
 
-![Status](https://img.shields.io/badge/status-publication%20ready-brightgreen?style=flat-square)
 ![R Version](https://img.shields.io/badge/R-≥4.0.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-CC--BY--4.0-lightgrey?style=flat-square)
+[![launch - renku](https://renkulab.io/renku-badge.svg)](https://renkulab.io/p/snsf-anoxia-project/holzmaar/sessions/01KB3K2R1H43S7YYNCYB9HNN91/start)
 
 ---
 
@@ -335,7 +335,7 @@ For major changes, please open an issue first to discuss proposed modifications.
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the **Creative Commons Attribution 4.0 International (CC-BY-4.0)** license. See [LICENSE](LICENSE) for details.
 
@@ -381,7 +381,7 @@ Kaufman, D., McKay, N., Routson, C., Erb, M., Davis, B., Heiri, O., Jaccard, S.,
 
 ---
 
-## �📖 Citation
+## Citation
 
 **For the dataset:**
 ```bibtex
@@ -421,7 +421,7 @@ For **reproducibility support:** See [notebooks/QUICKSTART.md](notebooks/QUICKST
 
 ---
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - **Holzmaar core:** Birlo, S., Tylmann, W., and Zolitschka, B.: Bayesian age–depth modelling applied to varve and radiometric dating to optimize the transfer
 of an existing high-resolution chronology to a new composite sediment profile from Holzmaar (West Eifel Volcanic Field, Germany),
