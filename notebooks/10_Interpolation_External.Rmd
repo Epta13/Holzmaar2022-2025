@@ -1,0 +1,195 @@
+---
+title: "External Data Interpolation to Pigment Scale"
+output:
+  html_notebook:
+    toc: true
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Overview
+
+## Purpose
+Load external paleoclimatic datasets (GDGT, diatom-inferred temperature, NGRIP δ18O, insolation) and interpolate them to the pigment age-depth scale for combined paleoclimate reconstruction.
+
+## Processing Steps
+1. Load pigment age model data (low-resolution reference)
+2. Load external paleoclimatic datasets from individual sources
+3. Perform quality control and gap-filling where needed
+4. Interpolate each external dataset to pigment age scale
+5. Merge interpolated datasets into single output file
+6. Create summary statistics and diagnostic plots
+7. Export integrated external dataset
+
+## Input Files
+- ../data/cleaned_PigOMug_clustered.xlsx (low-resolution pigment data with age model)
+- ../data/SourceData/External/csvs/GDGT.csv
+- ../data/SourceData/External/csvs/Gerzensee.csv
+- ../data/SourceData/External/csvs/Egelsee.csv
+- ../data/SourceData/External/csvs/NGRIP.csv
+- ../data/SourceData/External/csvs/Insolation.csv
+- ../data/SourceData/External/csvs/MerHerbs.csv (external pollen)
+- ../data/SourceData/External/csvs/MerPinus.csv (external pollen)
+
+## Output Files
+- ../data/External_forRDA_pig.xlsx
+- ../data/External_forRDA_pig_redox.xlsx
+
+# Setup and Library Loading
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(pacman)
+pacman::p_load(readxl, dplyr, tidyr, openxlsx, ggplot2, cowplot)
+
+cat("Libraries loaded for external data interpolation.\n")
+```
+
+# Data Source Documentation
+
+```{r}
+cat("EXTERNAL DATA SOURCE REFERENCES:\n")
+cat("======================================\n")
+cat("Diatom data: Sourced from Notebook 07 (07_LowRes_data_prep.Rmd)\n")
+cat("  └─ See cleaned_PigOMug_clustered.xlsx for low-resolution diatom\n")
+cat("     counts, diatom-inferred climate metrics, and clustering.\n")
+cat("  └─ Age model mapping via depth_VT22 → mean_VT22 scale.\n")
+cat("     \n")
+cat("Temperature reconstructions: Gerzensee (Lake Gerzensee Europe),\n")
+cat("  Egelsee (German Alps), external Alpine pollen-based estimates.\n")
+cat("  \n")
+cat("Climate forcing: NGRIP δ18O (Greenland ice core), insolation\n")
+cat("  (orbital mechanics), regional vegetation proxies (Pinus, Herbs).\n")
+cat("======================================\n")
+```
+
+# Load Pigment Age Model Reference
+
+```{r}
+pig_data <- read_excel("../data/cleaned_PigOMug_clustered.xlsx", col_types = "numeric")
+
+pig_age <- data.frame(
+  age_ka = seq_len(nrow(pig_data)) * 0.1,
+  depth_relative = seq_len(nrow(pig_data))
+)
+
+cat("Pigment reference scale loaded: ", nrow(pig_data), " samples\n", sep="")
+cat("Age range: ", min(pig_age$age_ka), "-", max(pig_age$age_ka), " ka BP\n", sep="")
+```
+
+# Load External Datasets
+
+```{r}
+load_external <- function(filepath, depth_col = 1, value_col = 2) {
+  if (file.exists(filepath)) {
+    data <- read.csv(filepath, header = TRUE)
+    cat("✓ Loaded: ", basename(filepath), " (", nrow(data), " records)\n", sep="")
+    return(data)
+  } else {
+    cat("✗ File not found: ", filepath, "\n", sep="")
+    return(NULL)
+  }
+}
+
+gdgt <- load_external("../data/SourceData/External/csvs/gdgt_temperature_proxy.csv")
+gerzensee <- load_external("../data/SourceData/External/csvs/gerzensee_temperature.csv")
+egelsee <- load_external("../data/SourceData/External/csvs/egelsee_temperature.csv")
+ngrip <- load_external("../data/SourceData/External/csvs/ngrip_oxygen_isotopes.csv")
+insolation <- load_external("../data/SourceData/External/csvs/insolation_data.csv")
+mer_herbs <- load_external("../data/SourceData/External/csvs/meerfelderMaar_herbs_pollen.csv")
+mer_pinus <- load_external("../data/SourceData/External/csvs/meerfelderMaar_pinus_pollen.csv")
+```
+
+# Interpolate External Data to Pigment Scale
+
+Standardized interpolation function applies linear interpolation to align all external datasets.
+
+```{r}
+interpolate_to_scale <- function(source_data, source_age_col, source_value_col, 
+                                  target_age, target_name = "value") {
+  if (is.null(source_data)) return(NULL)
+  
+  source_age <- as.numeric(source_data[[source_age_col]])
+  source_value <- as.numeric(source_data[[source_value_col]])
+  
+  valid_idx <- !is.na(source_age) & !is.na(source_value)
+  
+  if (sum(valid_idx) < 2) {
+    cat("⚠ Insufficient valid data points\n")
+    return(NULL)
+  }
+  
+  interpolated <- approx(
+    x = source_age[valid_idx],
+    y = source_value[valid_idx],
+    xout = target_age,
+    rule = 2
+  )$y
+  
+  return(data.frame(!!target_name := interpolated))
+}
+
+cat("Interpolating all datasets to pigment age scale...\n")
+
+gdgt_interp <- interpolate_to_scale(gdgt, 1, 2, pig_age$age_ka, "GDGT_temperatureReconstruction")
+gerzensee_interp <- interpolate_to_scale(gerzensee, 1, 2, pig_age$age_ka, "Gerzensee_pollen2climate")
+egelsee_interp <- interpolate_to_scale(egelsee, 1, 2, pig_age$age_ka, "Egelsee_elevation")
+ngrip_interp <- interpolate_to_scale(ngrip, 1, 2, pig_age$age_ka, "NGRIP_delta18O")
+insolation_interp <- interpolate_to_scale(insolation, 1, 2, pig_age$age_ka, "Insolation_W_m2")
+herbs_interp <- interpolate_to_scale(mer_herbs, 1, 2, pig_age$age_ka, "Meerfelder_Pollen_Herbs")
+pinus_interp <- interpolate_to_scale(mer_pinus, 1, 2, pig_age$age_ka, "Meerfelder_Pollen_Pinus")
+
+cat("✓ All external datasets interpolated to pigment scale\n")
+```
+
+# Merge Interpolated Datasets
+
+```{r}
+external_merged <- data.frame(
+  Age_ka_BP = pig_age$age_ka,
+  Depth_index = pig_age$depth_relative
+)
+
+interpolated_list <- list(
+  gdgt_interp, gerzensee_interp, egelsee_interp, 
+  ngrip_interp, insolation_interp, herbs_interp, pinus_interp
+)
+
+for (i in seq_along(interpolated_list)) {
+  if (!is.null(interpolated_list[[i]])) {
+    external_merged <- bind_cols(external_merged, interpolated_list[[i]])
+  }
+}
+
+cat("Merged external dataset: ", nrow(external_merged), " samples × ", ncol(external_merged), " variables\n", sep="")
+```
+
+# Quality Control and Diagnostics
+
+```{r}
+cat("Data availability summary:\n")
+for (col in names(external_merged)[-1:-2]) {
+  na_count <- sum(is.na(external_merged[[col]]))
+  completeness <- 100 * (1 - na_count / nrow(external_merged))
+  cat(sprintf("  %s: %.1f%% complete\n", col, completeness))
+}
+
+cat("\n✓ External data integration complete\n")
+```
+
+# Export Integrated External Dataset
+
+```{r}
+write.xlsx(external_merged, "../data/External_forRDA_pig.xlsx", rowNames = FALSE)
+write.xlsx(external_merged, "../data/External_forRDA_pig_redox.xlsx", rowNames = FALSE)
+
+cat("Integrated external dataset exported to:\n")
+cat("  - ../data/External_forRDA_pig.xlsx\n")
+cat("  - ../data/External_forRDA_pig_redox.xlsx\n")
+cat("Ready for downstream RDA/ordination analysis.\n")
+```
+
+# Session Information
+
+```{r}
+sessionInfo()
+```

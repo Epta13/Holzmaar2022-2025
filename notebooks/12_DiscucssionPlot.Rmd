@@ -1,0 +1,1967 @@
+---
+title: "Discussion Plot"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Loading packages
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library("pacman")
+
+pacman::p_unload(pacman::p_loaded(), character.only = TRUE)
+
+pacman::p_load("readxl", "dplyr", "ggplot2", "tidyr", "cowplot", "scales", "ggpattern")
+```
+
+# Loading data
+
+Loading the HSI data and the FULL SOURCE external data (before interpolation) to get maximum coverage.
+
+```{r}
+# Load HSI data for pigment concentrations
+hsi_data <- read_excel("../data/HZM_HR_cleaned.xlsx")
+hsi_data_raw <- read_excel("../data/HZM_HSI_calibrated.xlsx")
+
+# Check if we have the pigment columns, otherwise use RABD calibrated values
+if("Bphe" %in% colnames(hsi_data)) {
+  hsi_data <- hsi_data %>% 
+    select(mean_VT22, Bphe, Chla) %>%
+    mutate(Total_Chl = Chla) %>%
+    rename(age = mean_VT22, Bacteriopheophytin_a = Bphe)
+} else if("RABD845calib" %in% colnames(hsi_data)) {
+  hsi_data <- hsi_data %>% 
+    select(mean_VT22, RABD845calib, RABD670calib) %>%
+    rename(age = mean_VT22, Bacteriopheophytin_a = RABD845calib, Total_Chl = RABD670calib)
+} else {
+  hsi_data <- hsi_data %>% 
+    select(mean_VT22, RABD845, RABD670) %>%
+    rename(age = mean_VT22, Bacteriopheophytin_a = RABD845, Total_Chl = RABD670)
+}
+
+# Check if we have the pigment columns, otherwise use RABD calibrated values
+if("Bphe_calibrated" %in% colnames(hsi_data_raw)) {
+  hsi_data_raw <- hsi_data_raw %>% 
+    select(mean_VT, Bphe_calibrated, Chla_calibrated) %>%
+    mutate(Total_Chl = Chla_calibrated) %>%
+    rename(age = mean_VT, Bacteriopheophytin_a = Bphe_calibrated)
+} else if("RABD845calib" %in% colnames(hsi_data_raw)) {
+  hsi_data_raw <- hsi_data_raw %>% 
+    select(mean_VT, RABD845calib, RABD670calib) %>%
+    rename(age = mean_VT, Bacteriopheophytin_a = RABD845calib, Total_Chl = RABD670calib)
+} else {
+  hsi_data_raw <- hsi_data_raw %>% 
+    select(mean_VT, RABD845, RABD670) %>%
+    rename(age = mean_VT, Bacteriopheophytin_a = RABD845, Total_Chl = RABD670)
+}
+
+# Load FULL SOURCE external data (before interpolation) for maximum coverage
+insol_full <- read.csv("../data/SourceData/External/csvs/insolation_data.csv", sep = ";")
+insol_full <- insol_full %>% rename(age = age, insol_July = July.insolation, insol_Jan = January.insolation)
+
+ngrip_full <- read.csv("../data/SourceData/External/csvs/ngrip_oxygen_isotopes.csv", sep = ";")
+ngrip_full <- ngrip_full %>% rename(age = age_VT22, `18O_NGRIP` = Delta.O18..permil.)
+
+gerzensee_full <- read.csv("../data/SourceData/External/csvs/gerzensee_temperature.csv", sep = ";")
+gerzensee_full <- gerzensee_full %>% rename(JulyT_Ger = JulyT)
+
+# Load Heiri2015 temperature data (Alpine stack July T with confidence intervals)
+# File has complex header structure - skip first 4 rows to reach actual data
+heiri_full <- read_excel("../data/SourceData/External/Heiri2015.xlsx", skip = 4)
+# Extract age (already in yr BP) and temperature columns with uncertainty bounds
+# Column "(BP)" has age in years BP; column "°C...5" has Alpine stack temperature
+# Column "°C...6" has T_pos (upper bound); column "°C...7" has T_neg (lower bound)
+heiri_full <- heiri_full %>%
+  select(`(BP)`, `°C...5`, `°C...6`, `°C...7`) %>%
+  rename(age = `(BP)`, JulyT_Heiri = `°C...5`, T_pos = `°C...6`, T_neg = `°C...7`) %>%
+  mutate(age = as.numeric(age),  # Age already in years BP
+         JulyT_Heiri = as.numeric(JulyT_Heiri),
+         T_pos = as.numeric(T_pos),
+         T_neg = as.numeric(T_neg)) %>%
+  filter(!is.na(age), !is.na(JulyT_Heiri), age > 1)
+
+# Load Auel GDGT temperature data (using Ragberg_Zander calibration)
+gdgt_full <- read_excel("../data/SourceData/External/Auel_ELSA_stack_GDGT.xlsx")
+gdgt_full <- gdgt_full %>% 
+  select(age_calBP, MAF_Ragberg_Zander) %>%
+  rename(age = age_calBP, JulyT_GDGT = MAF_Ragberg_Zander) %>%
+  filter(!is.na(age), !is.na(JulyT_GDGT), age >= 0)
+
+# Interpolate GDGT to match HSI resolution using approx()
+# Extract HSI age scale
+hsi_age_scale <- data.frame(age = hsi_data$age)
+
+# Interpolate GDGT to HSI age scale
+gdgt_interp <- approx(gdgt_full$age, gdgt_full$JulyT_GDGT, xout = hsi_age_scale$age, method = "linear")
+gdgt_interpolated <- data.frame(
+  age = gdgt_interp$x,
+  JulyT_GDGT_interp = gdgt_interp$y
+)
+
+# Combine raw and interpolated GDGT data
+gdgt_combined <- gdgt_full %>%
+  full_join(gdgt_interpolated, by = "age") %>%
+  arrange(age)
+
+pollen_full <- read.csv("../data/SourceData/External/csvs/holzmaar_pollen_records.csv", sep = ";")
+pollen_full <- pollen_full %>% rename(BetulaHZM = Betula, PinusHZM = Pinus)
+
+# Load modelled Pinus data to extend coverage (13258-10995 BP)
+pollen_modelled <- read.csv("../data/HolzPol_predicted_13258-10995.csv")
+pollen_modelled <- pollen_modelled %>% select(Age_BP, Pinus) %>% 
+  rename(age = Age_BP, PinusHZM = Pinus)
+
+# Combine original pollen and modelled data
+pollen_combined <- bind_rows(
+  pollen_full %>% select(age, BetulaHZM, PinusHZM),
+  pollen_modelled
+) %>%
+  arrange(age) %>%
+  distinct(age, .keep_all = TRUE)
+
+# Load Mn data from raw low-res file (same approach as in 07_LowRes_data_prep.Rmd)
+LR_all <- read_excel("../data/SourceData/LR_data.xlsx", sheet = "Redox_Dia_PigOMug")
+Mn_tot_pre <- as.data.frame(select(LR_all, 12:15))
+ext_mn_raw <- bind_cols(age = LR_all$mean_VT22, Mn_tot_pre)
+# Select only Mn-F2 and Mn-F3 columns
+ext_mn_raw <- ext_mn_raw %>% select(age, `Mn-F2`, `Mn-F3`) %>% rename(Mn_F2 = `Mn-F2`, Mn_F3 = `Mn-F3`)
+```
+
+# Preparing data for plotting
+
+```{r}
+# Check the data resolutions and ranges
+cat("HSI data rows:", nrow(hsi_data), "\n")
+cat("HSI age range:", min(hsi_data$age, na.rm = TRUE), "to", max(hsi_data$age, na.rm = TRUE), "\n\n")
+
+cat("Insolation full data rows:", nrow(insol_full), "\n")
+cat("Insolation age range:", min(insol_full$age, na.rm = TRUE), "to", max(insol_full$age, na.rm = TRUE), "\n\n")
+
+cat("NGRIP full data rows:", nrow(ngrip_full), "\n")
+cat("NGRIP age range:", min(ngrip_full$age, na.rm = TRUE), "to", max(ngrip_full$age, na.rm = TRUE), "\n\n")
+
+cat("Gerzensee full data rows:", nrow(gerzensee_full), "\n")
+cat("Gerzensee age range:", min(gerzensee_full$age, na.rm = TRUE), "to", max(gerzensee_full$age, na.rm = TRUE), "\n\n")
+
+cat("Pollen full data rows:", nrow(pollen_full), "\n")
+cat("Pollen age range:", min(pollen_full$age, na.rm = TRUE), "to", max(pollen_full$age, na.rm = TRUE), "\n\n")
+
+cat("Mn raw data rows:", nrow(ext_mn_raw %>% na.omit()), "\n")
+cat("Mn age range:", min(ext_mn_raw$age, na.rm = TRUE), "to", max(ext_mn_raw$age, na.rm = TRUE), "\n\n")
+
+# Prepare separate datasets for each variable
+# Store raw data and create smoothed versions for pigments
+hsi_bphe_raw <- hsi_data %>% select(age, Bacteriopheophytin_a) %>% na.omit()
+hsi_bphe <- hsi_bphe_raw %>%
+  mutate(Bacteriopheophytin_a = predict(loess(Bacteriopheophytin_a ~ age, data = ., span = 0.01)))
+
+hsi_total_chl_raw <- hsi_data %>% select(age, Total_Chl) %>% na.omit()
+hsi_total_chl <- hsi_total_chl_raw %>%
+  mutate(Total_Chl = predict(loess(Total_Chl ~ age, data = ., span = 0.01)))
+
+# Split HSI data to avoid connecting lines across hiatus (11850-12540)
+# Before hiatus: age < 11850
+# After hiatus: age > 12540
+hsi_bphe_raw_before <- hsi_bphe_raw %>% filter(age < 11850)
+hsi_bphe_raw_after <- hsi_bphe_raw %>% filter(age > 12540)
+hsi_bphe_before <- hsi_bphe %>% filter(age < 11850)
+hsi_bphe_after <- hsi_bphe %>% filter(age > 12540)
+
+hsi_total_chl_raw_before <- hsi_total_chl_raw %>% filter(age < 11850)
+hsi_total_chl_raw_after <- hsi_total_chl_raw %>% filter(age > 12540)
+hsi_total_chl_before <- hsi_total_chl %>% filter(age < 11850)
+hsi_total_chl_after <- hsi_total_chl %>% filter(age > 12540)
+
+# Use Mn data from raw low-res file
+# Don't use na.omit() before pivot_longer to preserve rows with at least one non-NA value
+ext_mn <- ext_mn_raw %>% 
+  pivot_longer(cols = c(Mn_F2, Mn_F3), names_to = "Fraction", values_to = "Value") %>%
+  filter(!is.na(Value))  # Only remove rows where the Value itself is NA
+
+# Use FULL source data for external variables
+ext_insol_july <- insol_full %>% select(age, insol_July) %>% na.omit()
+ext_insol_jan <- insol_full %>% select(age, insol_Jan) %>% na.omit()
+
+# Apply smoothing to NGRIP data using loess
+ext_ngrip_raw <- ngrip_full %>% select(age, `18O_NGRIP`) %>% na.omit()
+# Use loess smoothing with span parameter (0.05 = 5% of data used for each point)
+ext_ngrip <- ext_ngrip_raw %>%
+  mutate(`18O_NGRIP` = predict(loess(`18O_NGRIP` ~ age, data = ., span = 0.01)))
+
+ext_julyT <- gerzensee_full %>% select(age, JulyT_Ger) %>% na.omit()
+ext_julyT_heiri <- heiri_full %>% select(age, JulyT_Heiri) %>% na.omit()
+ext_julyT_gdgt <- gdgt_combined %>% filter(!is.na(JulyT_GDGT)) %>% select(age, JulyT_GDGT) %>% na.omit()
+ext_julyT_gdgt_interp <- gdgt_combined %>% filter(!is.na(JulyT_GDGT_interp)) %>% select(age, JulyT_GDGT_interp) %>% na.omit()
+ext_betula <- pollen_full %>% select(age, BetulaHZM) %>% na.omit()
+ext_pinus <- pollen_combined %>% select(age, PinusHZM) %>% na.omit()
+
+# Print data point counts and ranges
+cat("Bacteriopheophytin a points:", nrow(hsi_bphe), 
+    "| Range:", min(hsi_bphe$age, na.rm = TRUE), "-", max(hsi_bphe$age, na.rm = TRUE), "\n")
+cat("Total chlorophylls points:", nrow(hsi_total_chl), 
+    "| Range:", min(hsi_total_chl$age, na.rm = TRUE), "-", max(hsi_total_chl$age, na.rm = TRUE), "\n")
+cat("Mn data points:", nrow(ext_mn)/2, 
+    "| Range:", min(ext_mn$age, na.rm = TRUE), "-", max(ext_mn$age, na.rm = TRUE), "\n")
+cat("July Insolation points:", nrow(ext_insol_july), 
+    "| Range:", min(ext_insol_july$age, na.rm = TRUE), "-", max(ext_insol_july$age, na.rm = TRUE), "\n")
+cat("January Insolation points:", nrow(ext_insol_jan), 
+    "| Range:", min(ext_insol_jan$age, na.rm = TRUE), "-", max(ext_insol_jan$age, na.rm = TRUE), "\n")
+cat("NGRIP 18O points:", nrow(ext_ngrip), 
+    "| Range:", min(ext_ngrip$age, na.rm = TRUE), "-", max(ext_ngrip$age, na.rm = TRUE), "\n")
+cat("Gerzensee July Temperature points:", nrow(ext_julyT), 
+    "| Range:", min(ext_julyT$age, na.rm = TRUE), "-", max(ext_julyT$age, na.rm = TRUE), "\n")
+cat("Heiri2015 July Temperature points:", nrow(ext_julyT_heiri), 
+    "| Range:", min(ext_julyT_heiri$age, na.rm = TRUE), "-", max(ext_julyT_heiri$age, na.rm = TRUE), "\n")
+cat("GDGT July Temperature points:", nrow(ext_julyT_gdgt), 
+    "| Range:", min(ext_julyT_gdgt$age, na.rm = TRUE), "-", max(ext_julyT_gdgt$age, na.rm = TRUE), "\n")
+cat("Betula points:", nrow(ext_betula), 
+    "| Range:", min(ext_betula$age, na.rm = TRUE), "-", max(ext_betula$age, na.rm = TRUE), "\n")
+cat("Pinus points:", nrow(ext_pinus), 
+    "| Range:", min(ext_pinus$age, na.rm = TRUE), "-", max(ext_pinus$age, na.rm = TRUE), "\n\n")
+
+# Check if external data covers HSI range
+hsi_min <- min(hsi_bphe$age, na.rm = TRUE)
+hsi_max <- max(hsi_bphe$age, na.rm = TRUE)
+
+cat("Coverage check (does external data cover HSI range", hsi_min, "-", hsi_max, "?):\n")
+cat("July Insolation:", min(ext_insol_july$age) <= hsi_min & max(ext_insol_july$age) >= hsi_max, "\n")
+cat("January Insolation:", min(ext_insol_jan$age) <= hsi_min & max(ext_insol_jan$age) >= hsi_max, "\n")
+cat("NGRIP:", min(ext_ngrip$age) <= hsi_min & max(ext_ngrip$age) >= hsi_max, "\n")
+cat("Gerzensee July Temperature:", min(ext_julyT$age) <= hsi_min & max(ext_julyT$age) >= hsi_max, "\n")
+cat("Heiri2015 July Temperature:", min(ext_julyT_heiri$age) <= hsi_min & max(ext_julyT_heiri$age) >= hsi_max, "\n")
+cat("GDGT July Temperature:", min(ext_julyT_gdgt$age) <= hsi_min & max(ext_julyT_gdgt$age) >= hsi_max, "\n")
+cat("Betula:", min(ext_betula$age) <= hsi_min & max(ext_betula$age) >= hsi_max, "\n")
+cat("Pinus:", min(ext_pinus$age) <= hsi_min & max(ext_pinus$age) >= hsi_max, "\n")
+```
+
+# Create multiplot with faceted layout
+
+```{r fig.width=8.27, fig.height=5.85}
+# We'll create individual ggplot objects for each panel to handle dual y-axes for insolation and NGRIP
+# Use HSI data age range as the x-axis limits
+age_limits <- c(min(hsi_bphe$age, na.rm = TRUE), max(hsi_bphe$age, na.rm = TRUE))
+
+# Define climate period boundaries (from 07_LowRes_data_prep.Rmd)
+# Clip to HSI data extent
+climate_periods <- data.frame(
+  period = c("Pleniglacial", "Bølling", "Allerød", "Younger Dryas"),
+  start = c(15342, 14444, 13611, 12727),
+  end = c(14444, 13611, 12727, 11625),
+  color = c("lightblue", "lightsalmon", "salmon", "lightblue3"),
+  alpha = c(0.4, 0.3, 0.3, 0.4)
+)
+
+# Clip period boundaries to match HSI data extent
+climate_periods$start <- pmax(climate_periods$start, age_limits[1])
+climate_periods$end <- pmin(climate_periods$end, age_limits[2])
+
+# Define HSI no-data region (where data is missing/extrapolated)
+hsi_nodata_start <- 11850  # Start of missing data gap
+hsi_nodata_end <- 12540  # End of missing data gap
+
+# Panel 1: Bacteriopheophytin a - Purple (y-axis on RIGHT)
+p1 <- ggplot() +
+  # Raw data - before hiatus
+  geom_line(data = hsi_bphe_raw_before, aes(x = age, y = Bacteriopheophytin_a),
+            color = "#9370DB", linewidth = 0.2, alpha = 1) +
+  # Raw data - after hiatus
+  geom_line(data = hsi_bphe_raw_after, aes(x = age, y = Bacteriopheophytin_a),
+            color = "#9370DB", linewidth = 0.2, alpha = 1) +
+  # Smoothed data - before hiatus
+  geom_line(data = hsi_bphe_before, aes(x = age, y = Bacteriopheophytin_a),
+            color = "#9370DB", linewidth = 0.5, alpha = 0.6) +
+  # Smoothed data - after hiatus
+  geom_line(data = hsi_bphe_after, aes(x = age, y = Bacteriopheophytin_a),
+            color = "#9370DB", linewidth = 0.5, alpha = 0.6) +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(position = "left") +
+  labs(x = "", y = "Bacteriopheophytine a\n(µg/g)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 11),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 11, face = "bold", color = "#9370DB"),
+        axis.line.x = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(-5, 2, -20, 2))
+
+# Panel 2: Mn stacked bars - Purple shades (BOTTOM PANEL)
+p2 <- ggplot(ext_mn, aes(x = age, y = Value, fill = Fraction)) +
+  geom_col(position = "stack", width = 18) +
+  scale_fill_manual(values = c("Mn_F2" = "#DDA0DD", "Mn_F3" = "#8B008B"),
+                    labels = c("Mn F2", "Mn F3")) +
+  scale_x_continuous(limits = age_limits, 
+                     breaks = seq(ceiling(age_limits[1]/100)*100, floor(age_limits[2]/100)*100, by = 100),
+                     labels = function(x) ifelse(x %% 200 == 0, as.character(x), ""),
+                     expand = c(0, 0)) +
+   scale_y_continuous(position = "right") +
+  labs(x = "Age (cal BP)", y = "Mn redox fractions\n(µg/g)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 11),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        axis.title = element_text(size = 11, face = "bold"),
+        legend.position = c(0.125, 0.4),
+        legend.background = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 9),
+        legend.key.size = unit(0.4, "cm"),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(-5, 2, 2, 2))
+
+# # Panel 3: Insolation with dual y-axes (July on left, January on right) - TOP PANEL
+# # Scale January to fit on same plot
+# jan_range <- range(ext_insol_jan$insol_Jan)
+# july_range <- range(ext_insol_july$insol_July)
+# scaling_factor_insol <- (july_range[2] - july_range[1]) / (jan_range[2] - jan_range[1])
+# offset_insol <- july_range[1] - jan_range[1] * scaling_factor_insol
+# 
+# p3 <- ggplot() +
+#   geom_line(data = ext_insol_july, aes(x = age, y = insol_July), 
+#             color = "#DC143C", linewidth = 0.8, alpha = 0.7) +
+#   geom_line(data = ext_insol_jan, aes(x = age, y = insol_Jan * scaling_factor_insol + offset_insol), 
+#             color = "#1E90FF", linewidth = 0.8, alpha = 0.7) +
+#   scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+#   scale_y_continuous(
+#     name = "July\nInsolation",
+#     sec.axis = sec_axis(~ (. - offset_insol) / scaling_factor_insol, name = "January\nInsolation")
+#   ) +
+#   labs(x = "") +
+#   theme_classic() +
+#   theme(axis.text = element_text(size = 11),
+#         axis.text.x = element_blank(),
+#         axis.ticks.x = element_blank(),
+#         axis.title.y.left = element_text(size = 11, face = "bold", color = "#DC143C"),
+#         axis.title.y.right = element_text(size = 11, face = "bold", color = "#1E90FF"),
+#         axis.text.y.left = element_text(color = "#DC143C"),
+#         axis.text.y.right = element_text(color = "#1E90FF"),
+#         axis.line.x = element_blank(),
+#         plot.background = element_blank(),
+#         panel.background = element_blank(),
+#         plot.margin = margin(2, 2, -10, 2))
+# 
+# Panel 4: NGRIP 18O with July Temperature overlay
+# Scale JulyT to fit with NGRIP
+ngrip_range <- range(ext_ngrip$`18O_NGRIP`)
+julyT_range <- range(ext_julyT$JulyT_Ger)
+scaling_factor_temp <- (ngrip_range[2] - ngrip_range[1]) / (julyT_range[2] - julyT_range[1])
+offset_temp <- ngrip_range[1] - julyT_range[1] * scaling_factor_temp
+
+# Calculate scaling factors for insolation data to match NGRIP scale
+july_insol_range <- range(ext_insol_july$insol_July, na.rm = TRUE)
+jan_insol_range <- range(ext_insol_jan$insol_Jan, na.rm = TRUE)
+scaling_factor_july_insol <- (ngrip_range[2] - ngrip_range[1]) / (july_insol_range[2] - july_insol_range[1])
+offset_july_insol <- ngrip_range[1] - july_insol_range[1] * scaling_factor_july_insol
+scaling_factor_jan_insol <- (ngrip_range[2] - ngrip_range[1]) / (jan_insol_range[2] - jan_insol_range[1])
+offset_jan_insol <- ngrip_range[1] - jan_insol_range[1] * scaling_factor_jan_insol
+
+# Prepare annotation text for insolation value ranges
+july_insol_min <- round(min(ext_insol_july$insol_July, na.rm = TRUE), 1)
+july_insol_max <- round(max(ext_insol_july$insol_July, na.rm = TRUE), 1)
+jan_insol_min <- round(min(ext_insol_jan$insol_Jan, na.rm = TRUE), 1)
+jan_insol_max <- round(max(ext_insol_jan$insol_Jan, na.rm = TRUE), 1)
+insol_annotation <- paste0("Summer (red): ", july_insol_min, "-", july_insol_max, " W/m²\nWinter (blue): ", jan_insol_min, "-", jan_insol_max, " W/m²")
+
+p4 <- ggplot() +
+  geom_line(data = ext_ngrip_raw, aes(x = age, y = `18O_NGRIP`), 
+            color = "#2F4F4F", linewidth = 0.5, alpha = 0.1) +
+  geom_line(data = ext_ngrip, aes(x = age, y = `18O_NGRIP`), 
+            color = "#2F4F4F", linewidth = 0.8, alpha = 0.4) +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(
+    name = "δ18O \n NGRIP(‰)"
+  ) +
+  labs(x = "") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 11),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y.left = element_text(size = 11, face = "bold", color = "#2F4F4F"),
+        axis.text.y.left = element_text(color = "#2F4F4F"),
+        axis.line.x = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(5, 2, -2, 2))
+
+p4_5 <- ggplot() +
+   geom_line(data = ext_julyT, aes(x = age, y = JulyT_Ger * scaling_factor_temp + offset_temp), 
+            color = "#FF6347", linewidth = 0.8, alpha = 1) +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(
+    position = "right",
+    labels = function(x) round((x - offset_temp) / scaling_factor_temp, 1)
+  ) +
+  labs(x = "", y = "July T \n Gerzensee(°C)") +
+  theme_classic() +  
+  theme(axis.text = element_text(size = 11),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y.right = element_text(size = 11, face = "bold", color = "#FF6347"),
+        axis.text.y.right = element_text(color = "#FF6347"),
+        axis.line.x = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(-30, 2, -40, 2))
+
+# Panel 4_6: Heiri2015 Temperature overlay with confidence interval and Gerzensee comparison
+heiri_range <- range(ext_julyT_heiri$JulyT_Heiri, na.rm = TRUE)
+scaling_factor_heiri <- (ngrip_range[2] - ngrip_range[1]) / (heiri_range[2] - heiri_range[1])
+offset_heiri <- ngrip_range[1] - heiri_range[1] * scaling_factor_heiri
+
+# Prepare Heiri data with scaled confidence bounds for plotting
+heiri_for_plot <- heiri_full %>%
+  mutate(
+    T_pos_scaled = T_pos * scaling_factor_heiri + offset_heiri,
+    T_neg_scaled = T_neg * scaling_factor_heiri + offset_heiri,
+    JulyT_scaled = JulyT_Heiri * scaling_factor_heiri + offset_heiri
+  )
+
+p4_6 <- ggplot() +
+  # Heiri confidence interval (ribbon)
+  geom_ribbon(data = heiri_for_plot, aes(x = age, ymin = T_neg_scaled, ymax = T_pos_scaled),
+              fill = "#DC143C", alpha = 0.15) +
+  # Heiri2015 as main comparison (full line)
+  geom_line(data = heiri_for_plot, aes(x = age, y = JulyT_scaled), 
+            color = "#DC143C", linewidth = 0.7, alpha = 0.9, linetype = "solid") +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(
+    position = "left",
+    labels = function(x) round((x - offset_heiri) / scaling_factor_heiri, 1)
+  ) +
+  labs(x = "", y = "Heiri 2015\n(°C)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 9),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y.left = element_text(size = 10, face = "bold", color = "#DC143C"),
+        axis.text.y.left = element_text(color = "#DC143C", size = 9),
+        axis.line.x = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(-30, 2, -40, 2))
+
+# Panel 4_7: GDGT Temperature overlay with Gerzensee comparison and interpolated data
+gdgt_range <- range(ext_julyT_gdgt$JulyT_GDGT, na.rm = TRUE)
+scaling_factor_gdgt <- (ngrip_range[2] - ngrip_range[1]) / (gdgt_range[2] - gdgt_range[1])
+offset_gdgt <- ngrip_range[1] - gdgt_range[1] * scaling_factor_gdgt
+
+p4_7 <- ggplot() +
+  # Raw GDGT data (thin, light)
+  geom_line(data = ext_julyT_gdgt, aes(x = age, y = JulyT_GDGT * scaling_factor_gdgt + offset_gdgt), 
+            color = "#228B22", linewidth = 0.4, alpha = 0.5, linetype = "solid") +
+  # Interpolated GDGT as main comparison (darker, dotted)
+  geom_line(data = ext_julyT_gdgt_interp, aes(x = age, y = JulyT_GDGT_interp * scaling_factor_gdgt + offset_gdgt), 
+            color = "#228B22", linewidth = 0.7, alpha = 0.9, linetype = "dotted") +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(
+    position = "right",
+    labels = function(x) round((x - offset_gdgt) / scaling_factor_gdgt, 1)
+  ) +
+  labs(x = "", y = "GDGT\n(°C)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 9),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y.right = element_text(size = 10, face = "bold", color = "#228B22"),
+        axis.text.y.right = element_text(color = "#228B22", size = 9),
+        axis.line.x = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(-30, 2, -40, 2))
+
+
+# Panel 4.8: Pinus - Brown filled area (underlays Betula)
+# Separate real data from modeled data
+# Real data: age < 10995 OR age > 13258
+# Modeled data: 10995 <= age <= 13258
+pinus_real_young <- ext_pinus %>% filter(age < 10995)
+pinus_real_old <- ext_pinus %>% filter(age > 13258)
+pinus_modeled <- ext_pinus %>% filter(age >= 10995 & age <= 13258)
+
+p4_8 <- ggplot() +
+  # Real data (young) - solid fill with standard alpha
+  geom_area(data = pinus_real_young, aes(x = age, y = PinusHZM), 
+            fill = "#228B22", alpha = 0.3) +
+  # Real data (old) - solid fill with standard alpha
+  geom_area(data = pinus_real_old, aes(x = age, y = PinusHZM), 
+            fill = "#228B22", alpha = 0.6) +
+  # Modeled data - patterned fill with diagonal lines
+  ggpattern::geom_area_pattern(data = pinus_modeled, aes(x = age, y = PinusHZM),
+            fill = "#228B22", alpha = 0.1,
+            pattern = "stripe",
+            pattern_fill = "#1B4D3E",
+            pattern_colour = "#228B22",
+            pattern_density = 0.1,
+            pattern_spacing = 0.05,
+            pattern_alpha = 0.3,
+            pattern_angle = 45) +
+  # Solid line for real data
+  geom_line(data = pinus_real_young, aes(x = age, y = PinusHZM), 
+            color = "#1B4D3E", linewidth = 0.35) +
+  geom_line(data = pinus_real_old, aes(x = age, y = PinusHZM), 
+            color = "#1B4D3E", linewidth = 0.35) +
+  # Dashed line for modeled data
+  geom_line(data = pinus_modeled, aes(x = age, y = PinusHZM), 
+            color = "#1B4D3E", linewidth = 0.35, linetype = "dashed") +
+  # Add "modelled" text in the middle of the modeled section
+  annotate("text", x = mean(c(12700, 13258)), y = 5, 
+           label = "modelled", size = 2, fontface = "italic", color = "#0B6623") +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(position = "right", limits = c(0, 36))+
+  labs(x = "", y = "Pinus HZM\n(%)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 7),
+        axis.text.x = element_blank(),
+        axis.title.y = element_text(size = 7, face = "bold", color = "#1B4D3E"),
+        axis.line.x = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks.x = element_blank(),
+        plot.margin = margin(-10, 0.1, -10, 0.1))
+
+# Panel 5: Betula - Yellow-orange filled area
+# Separate real data from modeled data
+# Real data: age < 10995 OR age > 13258
+# Modeled data: 10995 <= age <= 13258
+betula_real_young <- ext_betula %>% filter(age < 10995)
+betula_real_old <- ext_betula %>% filter(age > 13258)
+betula_modeled <- ext_betula %>% filter(age >= 10995 & age <= 13258)
+
+p5 <- ggplot() +
+  # Real data (young) - solid fill with standard alpha
+  geom_area(data = betula_real_young, aes(x = age, y = BetulaHZM), 
+            fill = "#FFA500", alpha = 0.3) +
+  # Real data (old) - solid fill with standard alpha
+  geom_area(data = betula_real_old, aes(x = age, y = BetulaHZM), 
+            fill = "#FFA500", alpha = 0.6) +
+  # Modeled data - patterned fill with diagonal lines
+  ggpattern::geom_area_pattern(data = betula_modeled, aes(x = age, y = BetulaHZM),
+            fill = "#FFA500", alpha = 0.1,
+            pattern = "stripe",
+            pattern_fill = "#FF8C00",
+            pattern_colour = "#FFA500",
+            pattern_density = 0.1,
+            pattern_spacing = 0.05,
+            pattern_alpha = 0.3,
+            pattern_angle = 45) +
+  # Solid line for real data
+  geom_line(data = betula_real_young, aes(x = age, y = BetulaHZM), 
+            color = "#FF8C00", linewidth = 0.5) +
+  geom_line(data = betula_real_old, aes(x = age, y = BetulaHZM), 
+            color = "#FF8C00", linewidth = 0.5) +
+  # Dashed line for modeled data
+  geom_line(data = betula_modeled, aes(x = age, y = BetulaHZM), 
+            color = "#FF8C00", linewidth = 0.5, linetype = "dashed") +
+  # Add "modelled" text in the middle of the modeled section
+  annotate("text", x = mean(c(12700, 13258)), y = 7, 
+           label = "modelled", size = 3, fontface = "italic", color = "#8B4500") +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(position = "right", limits = c(0, 36))+
+  labs(x = "", y = "Betula HZM\n(%)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 11),
+        axis.text.x = element_blank(),
+        axis.title.y = element_text(size = 11, face = "bold", color = "#FF8C00"),
+        axis.line.x = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        axis.ticks.x = element_blank(),
+        plot.margin = margin(-20, 2, -15, 2))
+
+# Panel 6: Total Chlorophylls - Green (y-axis on LEFT)
+p6 <- ggplot() +
+  # Raw data - before hiatus
+  geom_line(data = hsi_total_chl_raw_before, aes(x = age, y = Total_Chl),
+            color = "#228B22", linewidth = 0.3, alpha = 1) +
+  # Raw data - after hiatus
+  geom_line(data = hsi_total_chl_raw_after, aes(x = age, y = Total_Chl),
+            color = "#228B22", linewidth = 0.3, alpha = 1) +
+  # Smoothed data - before hiatus
+  geom_line(data = hsi_total_chl_before, aes(x = age, y = Total_Chl),
+            color = "#228B22", linewidth = 0.5, alpha = 0.6) +
+  # Smoothed data - after hiatus
+  geom_line(data = hsi_total_chl_after, aes(x = age, y = Total_Chl),
+            color = "#228B22", linewidth = 0.5, alpha = 0.6) +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(position = "left") +
+  labs(x = "", y = "Total chlorophylls\n(µg/g)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 11),
+        axis.text.x = element_blank(),
+        axis.title.y = element_text(size = 11, face = "bold", color = "#228B22"),
+        axis.line.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(-10, 2, -5, 2))
+
+# Combine all plots with aligned x-axis
+# Order from top to bottom: Insolation, NGRIP/JulyT/External temps, Betula, Total Chl, Bacteriopheophytin, Mn
+multiplot <- plot_grid(p4, p4_5, p4_6, p4_7, p6, p5, p1, p2,
+                       ncol = 1,
+                       align = "v",
+                       axis = "lr",
+                       rel_heights = c(1.4, 0.25, 0.25, 0.25, 1, 0.7, 1, 1.5),
+                       hjust = 0,
+                       vjust = 0,
+                       greedy = TRUE)
+
+# Add climate period overlay on top of the combined plot
+# Calculate normalized x positions, ensuring they stay within plot bounds
+# Account for plot margins - adjust these values to match actual y-axis space
+plot_left <- 0.095  # Left margin (y-axis + labels)
+plot_right <- 0.895  # Right margin (y-axis + labels)
+plot_width <- plot_right - plot_left
+
+# Standard normalization: maps age values to 0-1 range proportionally
+x_norm_start <- plot_left + pmax(0, pmin(1, (climate_periods$start - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width
+x_norm_end <- plot_left + pmax(0, pmin(1, (climate_periods$end - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width
+
+# Calculate normalized positions for HSI no-data region
+hsi_nodata_norm_start <- plot_left + pmax(0, pmin(1, (hsi_nodata_start - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width
+hsi_nodata_norm_end <- plot_left + pmax(0, pmin(1, (hsi_nodata_end - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width
+
+multiplot_with_periods <- ggdraw(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  # Add rectangles first (background layer)
+  geom_rect(aes(xmin = x_norm_start[1], xmax = x_norm_end[1],
+                ymin = 0.13, ymax = 1),
+            fill = climate_periods$color[1], alpha = climate_periods$alpha[1]) +
+  geom_rect(aes(xmin = x_norm_start[2], xmax = x_norm_end[2],
+                ymin = 0.13, ymax = 1),
+            fill = climate_periods$color[2], alpha = climate_periods$alpha[2]) +
+  geom_rect(aes(xmin = x_norm_start[3], xmax = x_norm_end[3],
+                ymin = 0.13, ymax = 1),
+            fill = climate_periods$color[3], alpha = climate_periods$alpha[3]) +
+  geom_rect(aes(xmin = x_norm_start[4], xmax = x_norm_end[4],
+                ymin = 0.13, ymax = 1),
+            fill = climate_periods$color[4], alpha = climate_periods$alpha[4]) +
+  # Add gray patterned rectangle for HSI no-data region
+  ggpattern::geom_rect_pattern(aes(xmin = hsi_nodata_norm_start, xmax = hsi_nodata_norm_end,
+                                    ymin = 0.13, ymax = 0.73),
+                               fill = "gray80", alpha = 0.2,
+                               pattern = "stripe", pattern_fill = "gray60",
+                               pattern_color = "gray60", pattern_density = 0.3,
+                               pattern_spacing = 0.01, pattern_angle = 45, 
+                               pattern_alpha = 0.2,
+                               color = "gray50", linetype = "dashed", linewidth = 0) +
+  # Draw the multiplot on top of rectangles
+  draw_plot(multiplot, x = 0, y = 0, width = 1, height = 1) +
+  # Add text labels for climate periods (above plot area)
+  geom_text(aes(x = (x_norm_start[1] + x_norm_end[1])/2, y = 1.02),
+            label = "Pleniglacial", size = 3.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start[2] + x_norm_end[2])/2, y = 1.02),
+            label = "Bølling", size = 3.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start[3] + x_norm_end[3])/2, y = 1.02),
+            label = "Allerød", size = 3.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start[4] + x_norm_end[4])/2, y = 1.02),
+            label = "Younger Dryas", size = 3.5, fontface = "bold") +
+  # Add label for hiatus
+  geom_text(aes(x = (hsi_nodata_norm_start + hsi_nodata_norm_end)/2, y = 0.7),
+            label = "Hiatus", size = 3.5, fontface = "bold", color = "gray30") +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1.05), clip = "off")
+
+print(multiplot_with_periods)
+
+# Save the plot
+ggsave("../figs/discussion_multiplot.png", multiplot_with_periods,
+       width = 8.27, height = 5.85, dpi = 300)
+```
+
+# Version 2: With adjustments
+
+This version includes: - X-axis labels at 250-year intervals - Mn legend inside plot area - Dashed lines at zone boundaries instead of colored rectangles
+
+```{r fig.width=8.27, fig.height=5.85}
+# Extract climate period boundaries for version 2 dashed lines
+# Use the clipped values from climate_periods
+climate_boundaries <- unique(c(climate_periods$start, climate_periods$end))
+climate_boundaries <- sort(climate_boundaries, decreasing = TRUE)
+
+# Modified Panel 2: Mn with legend inside plot area and 250-year intervals
+p2_v2 <- ggplot(ext_mn, aes(x = age, y = Value, fill = Fraction)) +
+  geom_col(position = "stack", width = 18) +
+  scale_fill_manual(values = c("Mn_F2" = "#DDA0DD", "Mn_F3" = "#8B008B"),
+                    labels = c("Mn F2", "Mn F3")) +
+  scale_x_continuous(limits = age_limits, 
+                     breaks = seq(ceiling(age_limits[1]/100)*100, floor(age_limits[2]/100)*100, by = 100),
+                     labels = function(x) ifelse(x %% 200 == 0, as.character(x), ""),
+                     expand = c(0, 0)) +
+  scale_y_continuous(position = "right") +
+  labs(x = "Age (cal BP)", y = "Mn redox fractions\n(µg/g)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 11),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        axis.title = element_text(size = 11, face = "bold"),
+        legend.position = c(0.125, 0.4),
+        legend.background = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 9),
+        legend.key.size = unit(0.4, "cm"),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(-5, 2, 2, 2))
+
+# Combine all plots with aligned x-axis (using modified p2_v2)
+multiplot_v2 <- plot_grid(p4, p4_5, p4_6, p4_7, p6, p5, p1, p2_v2,
+                          ncol = 1,
+                          align = "v",
+                          axis = "lr",
+                          rel_heights = c(1.4, 0.25, 0.25, 0.25, 1, 0.7, 1, 1.5),
+                          hjust = 0,
+                          vjust = 0,
+                          greedy = TRUE)
+
+# Calculate normalized x positions for version 2 overlays
+plot_left_v2 <- 0.095 
+plot_right_v2 <- 0.895 
+plot_width_v2 <- plot_right_v2 - plot_left_v2
+
+# Calculate normalized positions for boundaries (exclude first and last)
+# climate_boundaries is sorted in descending order, so remove first (max) and last (min)
+climate_boundaries_interior <- climate_boundaries[-c(1, length(climate_boundaries))]
+x_norm_boundaries <- plot_left_v2 + pmax(0, pmin(1, (climate_boundaries_interior - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_v2
+
+# Calculate normalized positions for text labels
+x_norm_start_v2 <- plot_left_v2 + pmax(0, pmin(1, (climate_periods$start - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_v2
+x_norm_end_v2 <- plot_left_v2 + pmax(0, pmin(1, (climate_periods$end - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_v2
+
+# Calculate normalized positions for HSI no-data region
+hsi_nodata_norm_start_v2 <- plot_left_v2 + pmax(0, pmin(1, (hsi_nodata_start - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_v2
+hsi_nodata_norm_end_v2 <- plot_left_v2 + pmax(0, pmin(1, (hsi_nodata_end - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_v2
+
+# Calculate y position for hiatus rectangle (HSI data only - p4 through p6)
+# rel_heights: p4=1.4, p4_5=0.25, p4_6=0.25, p4_7=0.25, p6=1, p5=0.7, p1=1, p2_v2=1.5, total=6.8
+# Hiatus should only apply to HSI data (p4+p4_5+p4_6+p4_7+p6), not temperature data
+total_height <- 1.4 + 0.25 + 0.25 + 0.25 + 1 + 0.7 + 1 + 1.5
+top_plots_hsi <- 1.4 + 0.25 + 0.25 + 0.25 + 1  # p4 through p6
+hiatus_ymax <- 1 - (top_plots_hsi / total_height) * 0.87
+
+multiplot_with_lines <- ggdraw(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  # Add hiatus rectangle first (background) - only for lower 4 plots
+  ggpattern::geom_rect_pattern(aes(xmin = hsi_nodata_norm_start_v2, xmax = hsi_nodata_norm_end_v2,
+                                    ymin = 0.13, ymax = hiatus_ymax),
+                               fill = "gray80", alpha = 0.1,
+                               pattern = "stripe", pattern_fill = "gray60",
+                               pattern_color = "gray60", pattern_density = 0.3,
+                               pattern_spacing = 0.01, pattern_angle = 45, 
+                               pattern_alpha = 0.1,
+                               color = "gray50", linetype = "dashed", linewidth = 0) +
+  # Draw the multiplot
+  draw_plot(multiplot_v2, x = 0, y = 0, width = 1, height = 1) +
+  # Add vertical dashed lines at climate period boundaries (on top of multiplot)
+  geom_segment(data = data.frame(x = x_norm_boundaries),
+               aes(x = x, xend = x, y = 0.13, yend = 1),
+               linetype = "dashed", color = "gray30", linewidth = 0.5) +
+  # Add text labels for climate periods (above plot area)
+  geom_text(aes(x = (x_norm_start_v2[1] + x_norm_end_v2[1])/2, y = 1.02),
+            label = "Pleniglacial", size = 3.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_v2[2] + x_norm_end_v2[2])/2, y = 1.02),
+            label = "Bølling", size = 3.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_v2[3] + x_norm_end_v2[3])/2, y = 1.02),
+            label = "Allerød", size = 3.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_v2[4] + x_norm_end_v2[4])/2, y = 1.02),
+            label = "Younger Dryas", size = 3.5, fontface = "bold") +
+  # Add label for hiatus
+  geom_text(aes(x = (hsi_nodata_norm_start_v2 + hsi_nodata_norm_end_v2)/2, y = 0.70),
+            label = "Hiatus", size = 3.5, fontface = "bold", color = "gray30") +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1.05), clip = "off")
+
+print(multiplot_with_lines)
+
+# Save the plot
+ggsave("../figs/discussion_multiplot_v2_ed.png", multiplot_with_lines,
+       width = 8.27, height = 5.85, dpi = 300)
+```
+
+# Pigment Communities Plot
+
+```{r fig.width=8.27, fig.height=3}
+# Load pigment data with cluster mean curves from heatmap analysis
+pig_clusters <- read_excel("../data/pig_alr_clust.xlsx")
+
+# Check available data
+cat("Age range:", range(pig_clusters$age, na.rm = TRUE), "\n")
+cat("Available columns:", colnames(pig_clusters)[colnames(pig_clusters) %in% c("C1", "C2", "C3")], "\n")
+
+# Select the three community curves (C1, C2, C3) from heatmap correlation clustering
+# These are ALR-transformed and z-scored values
+# Back-transform to relative concentrations (µg/g OM equivalent)
+pig_communities <- pig_clusters %>%
+  select(age, C1, C2, C3) %>%
+  na.omit() %>%
+  mutate(
+    # Back-transform from ALR: concentration = exp(alr) / (1 + exp(alr)) * 10^6
+    # Then scale to percentage for better visualization
+    C1_conc = exp(C1) / (1 + exp(C1)) * 100,
+    C2_conc = exp(C2) / (1 + exp(C2)) * 100,
+    C3_conc = exp(C3) / (1 + exp(C3)) * 100
+  ) %>%
+  select(age, C1 = C1_conc, C2 = C2_conc, C3 = C3_conc) %>%
+  pivot_longer(cols = c(C1, C2, C3), names_to = "community", values_to = "value")
+
+# Create the plot with overlaid filled areas
+# Labels match biological interpretation from notebook 07 and RDA analysis (notebook 09)
+# C1 = Pioneers, C3 = Secondary colonisers, C2 = Diatoms + Bacteria
+p_communities <- ggplot(pig_communities, aes(x = age, y = value, fill = community)) +
+  geom_area(alpha = 0.6, position = "identity") +
+  scale_fill_manual(values = c("C1" = "#E69F00", "C2" = "#009E73", "C3" = "#56B4E9"),
+                    name = "Pigment\nCommunity",
+                    labels = c("C1" = "Pioneers", 
+                               "C2" = "Diatoms + Bacteria",
+                               "C3" = "Secondary colonisers")) +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(x = "Age (cal BP)", 
+       y = "Relative abundance\n(%)",
+       title = "Pigment Communities from Heatmap Correlation Clustering") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 11),
+        axis.title = element_text(size = 11, face = "bold"),
+        legend.position = "right",
+        plot.title = element_text(size = 12, face = "bold"))
+
+print(p_communities)
+```
+
+```{r fig.width=8.27, fig.height=3}
+# Create a second plot showing relative percentage composition (sums to 100% at each time point)
+pig_communities_pct <- pig_clusters %>%
+  select(age, C1, C2, C3) %>%
+  # Check for NAs before removing them
+  mutate(
+    has_na = is.na(C1) | is.na(C2) | is.na(C3)
+  ) %>%
+  arrange(age) %>%
+  # Interpolate missing values to avoid gaps
+  mutate(
+    C1 = zoo::na.approx(C1, na.rm = FALSE),
+    C2 = zoo::na.approx(C2, na.rm = FALSE),
+    C3 = zoo::na.approx(C3, na.rm = FALSE)
+  ) %>%
+  na.omit() %>%
+  select(-has_na) %>%
+  mutate(
+    # Back-transform from ALR to concentrations
+    C1_conc = exp(C1) / (1 + exp(C1)),
+    C2_conc = exp(C2) / (1 + exp(C2)),
+    C3_conc = exp(C3) / (1 + exp(C3)),
+    # Calculate total at each time point
+    total = C1_conc + C2_conc + C3_conc,
+    # Convert to percentage of total
+    C1_pct = (C1_conc / total) * 100,
+    C2_pct = (C2_conc / total) * 100,
+    C3_pct = (C3_conc / total) * 100
+  ) %>%
+  select(age, C1 = C1_pct, C2 = C2_pct, C3 = C3_pct) %>%
+  pivot_longer(cols = c(C1, C2, C3), names_to = "community", values_to = "value")
+
+# Create stacked area plot (will sum to 100% at each time point)
+# C1 = Pioneers, C3 = Secondary colonisers, C2 = Diatoms + Bacteria
+p_communities_pct <- ggplot(pig_communities_pct, aes(x = age, y = value, fill = community)) +
+  geom_area(alpha = 0.6, position = "stack") +
+  scale_fill_manual(values = c("C1" = "#E69F00", "C2" = "#009E73", "C3" = "#56B4E9"),
+                    name = "Pigment\nCommunity",
+                    labels = c("C1" = "Pioneers", 
+                               "C2" = "Diatoms + Bacteria",
+                               "C3" = "Secondary colonisers")) +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 100)) +
+  labs(x = "Age (cal BP)", 
+       y = "Relative composition\n(% of total)",
+       title = "Pigment Community Composition (% of Total)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 11),
+        axis.title = element_text(size = 11, face = "bold"),
+        legend.position = "right",
+        plot.title = element_text(size = 12, face = "bold"))
+
+print(p_communities_pct)
+```
+
+```{r fig.width=8.27, fig.height=3}
+# Use pigment producer assignments from notebook 09 instead of clustering
+# Load original pigment concentration data
+LR_all <- read_excel("../data/SourceData/LR_data.xlsx", sheet = "Redox_Dia_PigOMug")
+Pig_da <- select(LR_all, 1, 3, 20:39)  # depth, age, and 20 pigments
+
+# Remove rows with NA values
+Pig_da_clean <- Pig_da %>% na.omit()
+
+# Check actual column names in the data
+cat("Actual pigment column names in data:\n")
+print(colnames(Pig_da_clean)[3:22])
+
+# Define pigment assignments from notebook 09 (Pigment producers groups section)
+# P = Pioneers, S = Secondary colonisers, D = Diatoms + Bacteria
+# Match the actual column names from LR_data.xlsx
+pigment_names <- c("Alfa_car", "bb_Car", "g_car", "Fuco", "Diadi", "Diatoxanthin", 
+                   "Allo", "Lute", "Echi1", "Zeax", "Canta", "Asta", 
+                   "Okenone", "Isore", "OH_Sph.ene", "Chloxant", "BChl", 
+                   "Chla", "PhphT", "PhideT")
+
+assignments <- c("P", "P", "P", "D", "P", "P", "P", "S", "P", "S", 
+                 "P", "P", "D", "P", "S", "P", "S", "S", "S", "S")
+
+# Create assignment dataframe
+pig_assignments <- data.frame(
+  pigment = pigment_names,
+  group = assignments,
+  stringsAsFactors = FALSE
+)
+
+# Map to actual column names in data (some may have different spelling)
+actual_cols <- colnames(Pig_da_clean)[3:22]
+cat("\n=== Mapping pigments to actual column names ===\n")
+
+# Create a more flexible mapping
+pig_assignments$actual_name <- sapply(pig_assignments$pigment, function(p) {
+  # Try exact match first
+  if (p %in% actual_cols) {
+    return(p)
+  }
+  # Try partial match
+  match_idx <- grep(tolower(gsub("[._]", "", p)), 
+                    tolower(gsub("[._]", "", actual_cols)), 
+                    fixed = FALSE)
+  if (length(match_idx) > 0) {
+    return(actual_cols[match_idx[1]])
+  }
+  return(NA)
+})
+
+# Show the mapping
+print(pig_assignments[, c("pigment", "actual_name", "group")])
+
+# Remove any pigments that couldn't be mapped
+pig_assignments <- pig_assignments %>% 
+  filter(!is.na(actual_name))
+
+cat("=== Pigment assignments ===\n")
+cat("\nPioneers (P):\n")
+cat(paste(pig_assignments$actual_name[pig_assignments$group == "P"], collapse = ", "), "\n")
+cat("\nSecondary colonisers (S):\n")
+cat(paste(pig_assignments$actual_name[pig_assignments$group == "S"], collapse = ", "), "\n")
+cat("\nDiatoms + Bacteria (D):\n")
+cat(paste(pig_assignments$actual_name[pig_assignments$group == "D"], collapse = ", "), "\n")
+
+# Count number of pigments in each group
+n_pioneers <- sum(pig_assignments$group == "P")
+n_secondary <- sum(pig_assignments$group == "S")
+n_diatoms <- sum(pig_assignments$group == "D")
+
+cat("\n=== Number of pigments per group ===\n")
+cat("Pioneers:", n_pioneers, "pigments\n")
+cat("Secondary colonisers:", n_secondary, "pigments\n")
+cat("Diatoms + Bacteria:", n_diatoms, "pigments\n")
+
+# Sum concentrations by group
+Pig_by_group <- Pig_da_clean %>%
+  mutate(
+    # Sum pigments by assignment group using actual column names
+    Pioneers_sum = rowSums(select(., all_of(pig_assignments$actual_name[pig_assignments$group == "P"])), na.rm = TRUE),
+    Secondary_sum = rowSums(select(., all_of(pig_assignments$actual_name[pig_assignments$group == "S"])), na.rm = TRUE),
+    Diatoms_Bacteria_sum = rowSums(select(., all_of(pig_assignments$actual_name[pig_assignments$group == "D"])), na.rm = TRUE),
+    # Normalize by number of pigments in each group (mean per pigment)
+    Pioneers_norm = Pioneers_sum / n_pioneers,
+    Secondary_norm = Secondary_sum / n_secondary,
+    Diatoms_Bacteria_norm = Diatoms_Bacteria_sum / n_diatoms
+  ) %>%
+  select(age = mean_VT22, 
+         Pioneers_sum, Secondary_sum, Diatoms_Bacteria_sum) %>%
+  mutate(
+    # Replace any NaN or NA values with 0
+    Pioneers_sum = ifelse(is.na(Pioneers_sum) | is.nan(Pioneers_sum), 0, Pioneers_sum),
+    Secondary_sum = ifelse(is.na(Secondary_sum) | is.nan(Secondary_sum), 0, Secondary_sum),
+    Diatoms_Bacteria_sum = ifelse(is.na(Diatoms_Bacteria_sum) | is.nan(Diatoms_Bacteria_sum), 0, Diatoms_Bacteria_sum),
+    # Calculate percentage of total RAW sum (not normalized)
+    total_sum = Pioneers_sum + Secondary_sum + Diatoms_Bacteria_sum,
+    # Avoid division by zero
+    total_sum = ifelse(total_sum == 0, 1, total_sum),
+    Pioneers = (Pioneers_sum / total_sum) * 100,
+    Secondary_colonisers = (Secondary_sum / total_sum) * 100,
+    Diatoms_Bacteria = (Diatoms_Bacteria_sum / total_sum) * 100
+  ) %>%
+  select(age, Pioneers_sum, Secondary_sum, Diatoms_Bacteria_sum, Pioneers, Secondary_colonisers, Diatoms_Bacteria)
+
+# Check for gaps in age data and interpolate if needed
+cat("\n=== Checking for age gaps ===\n")
+cat("Number of samples:", nrow(Pig_by_group), "\n")
+cat("Age range:", range(Pig_by_group$age), "\n")
+age_diffs <- diff(sort(Pig_by_group$age))
+cat("Max gap between samples:", max(age_diffs), "years\n")
+
+# Sort by age and interpolate to ensure continuous coverage
+Pig_by_group <- Pig_by_group %>%
+  arrange(age) %>%
+  mutate(
+    # Fill any remaining NA values with interpolation
+    Pioneers = zoo::na.approx(Pioneers, na.rm = FALSE),
+    Secondary_colonisers = zoo::na.approx(Secondary_colonisers, na.rm = FALSE),
+    Diatoms_Bacteria = zoo::na.approx(Diatoms_Bacteria, na.rm = FALSE)
+  ) %>%
+  # Remove any leading/trailing NAs that couldn't be interpolated
+  filter(!is.na(Pioneers) & !is.na(Secondary_colonisers) & !is.na(Diatoms_Bacteria))
+
+# Check summary
+cat("\n=== Summary of group percentages ===\n")
+cat("Pioneers range:", range(Pig_by_group$Pioneers, na.rm=TRUE), "\n")
+cat("Secondary colonisers range:", range(Pig_by_group$Secondary_colonisers, na.rm=TRUE), "\n")
+cat("Diatoms + Bacteria range:", range(Pig_by_group$Diatoms_Bacteria, na.rm=TRUE), "\n")
+cat("Any NAs?", any(is.na(Pig_by_group)), "\n")
+
+# Check mean values
+cat("\n=== Mean percentages ===\n")
+cat("Pioneers mean:", mean(Pig_by_group$Pioneers, na.rm=TRUE), "%\n")
+cat("Secondary colonisers mean:", mean(Pig_by_group$Secondary_colonisers, na.rm=TRUE), "%\n")
+cat("Diatoms + Bacteria mean:", mean(Pig_by_group$Diatoms_Bacteria, na.rm=TRUE), "%\n")
+
+# Check if values sum to 100
+cat("\n=== Check sum (should be 100 for each row) ===\n")
+Pig_by_group <- Pig_by_group %>%
+  mutate(row_sum = Pioneers + Secondary_colonisers + Diatoms_Bacteria)
+
+cat("Sum range:", range(Pig_by_group$row_sum, na.rm=TRUE), "\n")
+cat("Mean sum:", mean(Pig_by_group$row_sum, na.rm=TRUE), "\n")
+cat("Samples where sum != 100:", sum(abs(Pig_by_group$row_sum - 100) > 0.01, na.rm=TRUE), "\n")
+
+# Show a few examples where Diatoms might be 0
+zero_diatoms <- Pig_by_group %>% filter(Diatoms_Bacteria < 0.1) %>% head(5)
+if(nrow(zero_diatoms) > 0) {
+  cat("\n=== Examples where Diatoms + Bacteria is near 0 ===\n")
+  print(zero_diatoms[, c("age", "Pioneers", "Secondary_colonisers", "Diatoms_Bacteria", "row_sum")])
+}
+
+# Remove the row_sum column before plotting
+Pig_by_group_plot <- Pig_by_group %>% select(age, Pioneers, Secondary_colonisers, Diatoms_Bacteria)
+
+# Export the sum concentrations (not percentages) to file
+library(openxlsx)
+Pig_by_group_export <- Pig_by_group %>% 
+  select(age, 
+         Pioneers_sum_concentration = Pioneers_sum,
+         Secondary_colonisers_sum_concentration = Secondary_sum,
+         Diatoms_Bacteria_sum_concentration = Diatoms_Bacteria_sum)
+write.xlsx(Pig_by_group_export, "../data/pigment_communities_sum_concentrations.xlsx", rowNames = FALSE)
+cat("\n=== Data exported to ../data/pigment_communities_sum_concentrations.xlsx ===\n")
+cat("Columns: age, Pioneers_sum_concentration (µg/g OM), Secondary_colonisers_sum_concentration (µg/g OM), Diatoms_Bacteria_sum_concentration (µg/g OM)\n")
+
+# Continue with the plotting using the normalized percentages
+Pig_by_group <- Pig_by_group_plot
+
+# Pivot for plotting
+Pig_by_group_long <- Pig_by_group %>%
+  pivot_longer(cols = c(Pioneers, Secondary_colonisers, Diatoms_Bacteria), 
+               names_to = "community", values_to = "value") %>%
+  # Ensure proper ordering for stacking (bottom to top)
+  mutate(community = factor(community, levels = c("Diatoms_Bacteria", "Secondary_colonisers", "Pioneers")))
+
+# Debug: Check for 0 values
+cat("\n=== Checking for zero values ===\n")
+zeros_df <- Pig_by_group_long %>% filter(value < 0.001)
+if(nrow(zeros_df) > 0) {
+  cat("Found", nrow(zeros_df), "values < 0.001\n")
+  cat("Sample:\n")
+  print(head(zeros_df))
+}
+
+# Create stacked area plot - use geom_ribbon instead of geom_area for better control
+# geom_ribbon explicitly defines ymin and ymax, so there should be NO gaps even with 0 values
+Pig_by_group_wide <- Pig_by_group %>% select(age, Pioneers, Secondary_colonisers, Diatoms_Bacteria)
+
+p_communities_producers <- ggplot() +
+  # Layer 1: Diatoms (bottom, from 0 to Diatoms value)
+  geom_ribbon(data = Pig_by_group_wide, 
+              aes(x = age, ymin = 0, ymax = Diatoms_Bacteria, fill = "Diatoms + Bacteria"), 
+              alpha = 0.8) +
+  # Layer 2: Secondary (from Diatoms to Diatoms+Secondary)
+  geom_ribbon(data = Pig_by_group_wide, 
+              aes(x = age, ymin = Diatoms_Bacteria, ymax = Diatoms_Bacteria + Secondary_colonisers, fill = "Secondary colonisers"), 
+              alpha = 0.8) +
+  # Layer 3: Pioneers (from Diatoms+Secondary to 100)
+  geom_ribbon(data = Pig_by_group_wide, 
+              aes(x = age, ymin = Diatoms_Bacteria + Secondary_colonisers, ymax = 100, fill = "Pioneers"), 
+              alpha = 0.8) +
+  scale_fill_manual(values = c("Diatoms + Bacteria" = "mediumpurple3",
+                                "Secondary colonisers" = "green3",
+                                "Pioneers" = "cyan"),
+                    name = "Pigment Community") +
+  scale_x_reverse() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 100)) +
+  labs(x = "Age (cal yr BP)", 
+       y = "Relative Abundance (%)",
+       title = "Pigment Communities Based on Producer Groups") +
+  theme_bw() +
+  theme(axis.text = element_text(size = 11),
+        axis.title = element_text(size = 11),
+        legend.position = "right",
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = 12))
+
+print(p_communities_producers)
+
+# Also create an unstacked version to see all groups clearly
+p_communities_unstacked <- ggplot(Pig_by_group_long, aes(x = age, y = value, color = community)) +
+  geom_line(size = 1.2) +
+  scale_color_manual(values = c("Pioneers" = "cyan4", 
+                                 "Secondary_colonisers" = "green4", 
+                                 "Diatoms_Bacteria" = "mediumpurple4"),
+                     name = "Pigment\nCommunity",
+                     labels = c("Pioneers" = "Pioneers", 
+                                "Secondary_colonisers" = "Secondary colonisers",
+                                "Diatoms_Bacteria" = "Diatoms + Bacteria")) +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0.02, 0)) +
+  labs(x = "Age (cal BP)", 
+       y = "Relative composition\n(% of total concentration)",
+       title = "Pigment Communities Based on Producer Groups (Unstacked)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 11),
+        axis.title = element_text(size = 11, face = "bold"),
+        legend.position = "right",
+        plot.title = element_text(size = 12, face = "bold"))
+
+print(p_communities_unstacked)
+```
+
+## Pigment Communities - Normalized by Number of Pigments per Group
+
+```{r}
+# Count number of pigments per group
+n_pioneers <- sum(pig_assignments$group == "P")
+n_secondary <- sum(pig_assignments$group == "S")
+n_diatoms <- sum(pig_assignments$group == "D")
+
+cat("\n=== Number of pigments per group ===\n")
+cat("Pioneers:", n_pioneers, "pigments\n")
+cat("Secondary colonisers:", n_secondary, "pigments\n")
+cat("Diatoms + Bacteria:", n_diatoms, "pigments\n")
+
+# Reload and recalculate with normalization
+Pig_by_group_norm <- Pig_da_clean %>%
+  mutate(
+    Pioneers_sum = rowSums(select(., all_of(pig_assignments$actual_name[pig_assignments$group == "P"])), na.rm = TRUE),
+    Secondary_sum = rowSums(select(., all_of(pig_assignments$actual_name[pig_assignments$group == "S"])), na.rm = TRUE),
+    Diatoms_Bacteria_sum = rowSums(select(., all_of(pig_assignments$actual_name[pig_assignments$group == "D"])), na.rm = TRUE)
+  ) %>%
+  select(age = mean_VT22, Pioneers_sum, Secondary_sum, Diatoms_Bacteria_sum) %>%
+  mutate(
+    # Replace NA/NaN with 0
+    Pioneers_sum = ifelse(is.na(Pioneers_sum) | is.nan(Pioneers_sum), 0, Pioneers_sum),
+    Secondary_sum = ifelse(is.na(Secondary_sum) | is.nan(Secondary_sum), 0, Secondary_sum),
+    Diatoms_Bacteria_sum = ifelse(is.na(Diatoms_Bacteria_sum) | is.nan(Diatoms_Bacteria_sum), 0, Diatoms_Bacteria_sum),
+    # Normalize by number of pigments (= mean concentration per pigment in group)
+    Pioneers_norm = Pioneers_sum / n_pioneers,
+    Secondary_norm = Secondary_sum / n_secondary,
+    Diatoms_Bacteria_norm = Diatoms_Bacteria_sum / n_diatoms,
+    # Calculate percentages from normalized values
+    total_norm = Pioneers_norm + Secondary_norm + Diatoms_Bacteria_norm,
+    total_norm = ifelse(total_norm == 0, 1, total_norm),
+    Pioneers = (Pioneers_norm / total_norm) * 100,
+    Secondary_colonisers = (Secondary_norm / total_norm) * 100,
+    Diatoms_Bacteria = (Diatoms_Bacteria_norm / total_norm) * 100
+  )
+
+# Verify percentages sum to 100
+cat("\n=== Percentage verification (normalized) ===\n")
+row_sums <- Pig_by_group_norm$Pioneers + Pig_by_group_norm$Secondary_colonisers + Pig_by_group_norm$Diatoms_Bacteria
+cat("Min row sum:", min(row_sums), "\n")
+cat("Max row sum:", max(row_sums), "\n")
+cat("Mean row sum:", mean(row_sums), "\n")
+
+# Interpolate any remaining NAs
+Pig_by_group_norm <- Pig_by_group_norm %>%
+  arrange(age) %>%
+  mutate(
+    Pioneers = zoo::na.approx(Pioneers, na.rm = FALSE),
+    Secondary_colonisers = zoo::na.approx(Secondary_colonisers, na.rm = FALSE),
+    Diatoms_Bacteria = zoo::na.approx(Diatoms_Bacteria, na.rm = FALSE)
+  ) %>%
+  filter(!is.na(Pioneers) & !is.na(Secondary_colonisers) & !is.na(Diatoms_Bacteria))
+
+# Select only plotting columns
+Pig_by_group_norm_plot <- Pig_by_group_norm %>% select(age, Pioneers, Secondary_colonisers, Diatoms_Bacteria)
+
+# Create stacked area plot using geom_ribbon for guaranteed 100% fill
+p_communities_normalized <- ggplot() +
+  # Layer 1: Diatoms (bottom, from 0 to Diatoms value)
+  geom_ribbon(data = Pig_by_group_norm_plot, 
+              aes(x = age, ymin = 0, ymax = Diatoms_Bacteria, fill = "Diatoms + Bacteria"), 
+              alpha = 0.8) +
+  # Layer 2: Secondary (from Diatoms to Diatoms+Secondary)
+  geom_ribbon(data = Pig_by_group_norm_plot, 
+              aes(x = age, ymin = Diatoms_Bacteria, ymax = Diatoms_Bacteria + Secondary_colonisers, fill = "Secondary colonisers"), 
+              alpha = 0.8) +
+  # Layer 3: Pioneers (from Diatoms+Secondary to 100)
+  geom_ribbon(data = Pig_by_group_norm_plot, 
+              aes(x = age, ymin = Diatoms_Bacteria + Secondary_colonisers, ymax = 100, fill = "Pioneers"), 
+              alpha = 0.8) +
+  scale_fill_manual(values = c("Diatoms + Bacteria" = "mediumpurple3",
+                                "Secondary colonisers" = "green3",
+                                "Pioneers" = "cyan"),
+                    name = "Pigment Community") +
+  scale_x_reverse() +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 100)) +
+  labs(x = "Age (cal yr BP)", 
+       y = "Relative Abundance (%, normalized by # pigments)",
+       title = "Pigment Communities - Normalized by Number of Pigments per Group") +
+  theme_bw() +
+  theme(axis.text = element_text(size = 11),
+        axis.title = element_text(size = 11),
+        legend.position = "right",
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(size = 12))
+
+print(p_communities_normalized)
+
+# Export the normalized data
+Pig_by_group_norm_export <- Pig_by_group_norm %>% 
+  select(age, 
+         Pioneers_mean_per_pigment = Pioneers_norm,
+         Secondary_mean_per_pigment = Secondary_norm,
+         Diatoms_Bacteria_mean_per_pigment = Diatoms_Bacteria_norm,
+         Pioneers_percent = Pioneers,
+         Secondary_colonisers_percent = Secondary_colonisers,
+         Diatoms_Bacteria_percent = Diatoms_Bacteria)
+write.xlsx(Pig_by_group_norm_export, "../data/pigment_communities_normalized_by_n_pigments.xlsx", rowNames = FALSE)
+cat("\n=== Normalized data exported ===\n")
+cat("File: ../data/pigment_communities_normalized_by_n_pigments.xlsx\n")
+cat("Mean per pigment columns show: total_concentration / n_pigments for each group\n")
+cat("Percent columns show: relative composition based on normalized values\n")
+```
+
+# Version 2 with Pigment Communities
+
+```{r fig.width=8.27, fig.height=7.5}
+# Create normalized pigment communities plot for version 2 with pigments
+# Calculate normalized values
+n_pioneers <- sum(pig_assignments$group == "P")
+n_secondary <- sum(pig_assignments$group == "S")
+n_diatoms <- sum(pig_assignments$group == "D")
+
+Pig_by_group_norm_v2 <- Pig_da_clean %>%
+  mutate(
+    Pioneers_sum = rowSums(select(., all_of(pig_assignments$actual_name[pig_assignments$group == "P"])), na.rm = TRUE),
+    Secondary_sum = rowSums(select(., all_of(pig_assignments$actual_name[pig_assignments$group == "S"])), na.rm = TRUE),
+    Diatoms_Bacteria_sum = rowSums(select(., all_of(pig_assignments$actual_name[pig_assignments$group == "D"])), na.rm = TRUE)
+  ) %>%
+  select(age = mean_VT22, Pioneers_sum, Secondary_sum, Diatoms_Bacteria_sum) %>%
+  mutate(
+    Pioneers_sum = ifelse(is.na(Pioneers_sum) | is.nan(Pioneers_sum), 0, Pioneers_sum),
+    Secondary_sum = ifelse(is.na(Secondary_sum) | is.nan(Secondary_sum), 0, Secondary_sum),
+    Diatoms_Bacteria_sum = ifelse(is.na(Diatoms_Bacteria_sum) | is.nan(Diatoms_Bacteria_sum), 0, Diatoms_Bacteria_sum),
+    Pioneers_norm = Pioneers_sum / n_pioneers,
+    Secondary_norm = Secondary_sum / n_secondary,
+    Diatoms_Bacteria_norm = Diatoms_Bacteria_sum / n_diatoms,
+    total_norm = Pioneers_norm + Secondary_norm + Diatoms_Bacteria_norm,
+    total_norm = ifelse(total_norm == 0, 1, total_norm),
+    Pioneers = (Pioneers_norm / total_norm) * 100,
+    Secondary_colonisers = (Secondary_norm / total_norm) * 100,
+    Diatoms_Bacteria = (Diatoms_Bacteria_norm / total_norm) * 100
+  ) %>%
+  arrange(age) %>%
+  mutate(
+    Pioneers = zoo::na.approx(Pioneers, na.rm = FALSE),
+    Secondary_colonisers = zoo::na.approx(Secondary_colonisers, na.rm = FALSE),
+    Diatoms_Bacteria = zoo::na.approx(Diatoms_Bacteria, na.rm = FALSE)
+  ) %>%
+  filter(!is.na(Pioneers) & !is.na(Secondary_colonisers) & !is.na(Diatoms_Bacteria)) %>%
+  # Renormalize to ensure each row sums to exactly 100% after interpolation
+  mutate(
+    row_total = Pioneers + Secondary_colonisers + Diatoms_Bacteria,
+    row_total = ifelse(row_total == 0, 1, row_total),
+    Pioneers = (Pioneers / row_total) * 100,
+    Secondary_colonisers = (Secondary_colonisers / row_total) * 100,
+    Diatoms_Bacteria = (Diatoms_Bacteria / row_total) * 100
+  ) %>%
+  select(-row_total)
+
+Pig_by_group_norm_plot_v2 <- Pig_by_group_norm_v2 %>% select(age, Pioneers, Secondary_colonisers, Diatoms_Bacteria)
+
+# Create pigment communities plot - normalized by number of pigments
+# Place below bacteriopheophytin (p1) with no x-axis and y-axis on right
+# Stacking order from bottom to top: Pioneers (base), Secondary colonisers (middle), Diatoms + Bacteria (top)
+p_pig_norm_v2 <- ggplot() +
+  geom_ribbon(data = Pig_by_group_norm_plot_v2, 
+              aes(x = age, ymin = 0, ymax = Pioneers, fill = "Pioneers"), 
+              alpha = 0.5) +
+  geom_ribbon(data = Pig_by_group_norm_plot_v2, 
+              aes(x = age, ymin = Pioneers, ymax = Pioneers + Secondary_colonisers, fill = "Secondary colonisers"), 
+              alpha = 0.5) +
+  geom_ribbon(data = Pig_by_group_norm_plot_v2, 
+              aes(x = age, ymin = Pioneers + Secondary_colonisers, ymax = 100, fill = "Diatoms + Bacteria"), 
+              alpha = 0.5) +
+  scale_fill_manual(values = c("Pioneers" = "cyan",
+                                "Secondary colonisers" = "green3",
+                                "Diatoms + Bacteria" = "mediumpurple3"), name = "") +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(position = "right", expand = c(0, 0), limits = c(0, 100)) +
+  labs(x = "", y = "Pigment Communities\n(%, normalized)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 11),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title = element_text(size = 11, face = "bold"),
+        axis.line.x = element_blank(),
+        legend.position = c(0.61, -0.1),
+        legend.direction = "horizontal",
+        legend.background = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 8),
+        legend.key.size = unit(0.35, "cm"),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(0, 2, -5, 2))
+
+# Create modified Mn plot with y-axis on LEFT for version 2 with pigments
+p2_v2_pig <- ggplot(ext_mn, aes(x = age, y = Value, fill = Fraction)) +
+  geom_col(position = "stack", width = 18) +
+  scale_fill_manual(values = c("Mn_F2" = "#DDA0DD", "Mn_F3" = "#8B008B"),
+                    labels = c("Mn F2", "Mn F3")) +
+  scale_x_continuous(limits = age_limits, 
+                     breaks = seq(ceiling(age_limits[1]/100)*100, floor(age_limits[2]/100)*100, by = 100),
+                     labels = function(x) ifelse(x %% 200 == 0, as.character(x), ""),
+                     expand = c(0, 0)) +
+  scale_y_continuous(position = "left") +
+  labs(x = "Age (cal BP)", y = "Mn redox fractions\n(µg/g)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 11),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        axis.title = element_text(size = 11, face = "bold"),
+        legend.position = c(0.125, 0.4),
+        legend.background = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 9),
+        legend.key.size = unit(0.4, "cm"),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(-5, 2, 2, 2))
+
+# Combine all plots with aligned x-axis (including normalized pigment communities)
+# Order: p4 (NGRIP), p4_5 (Gerzensee JulyT), p4_6 (Heiri JulyT), p4_7 (GDGT JulyT), p6 (Total Chl), p5 (Betula), p1 (Bacteriopheophytin), p_pig_norm_v2 (Pigments-right), p2_v2_pig (Mn-left)
+multiplot_v2_with_pigments <- plot_grid(p4, p4_5, p4_6, p4_7, p6, p5, p1, p_pig_norm_v2, p2_v2_pig,
+                          ncol = 1,
+                          align = "v",
+                          axis = "lr",
+                          rel_heights = c(1.2, 0.2, 0.2, 0.2, 0.9, 0.6, 0.9, 1.0, 1.3),
+                          hjust = 0,
+                          vjust = 0,
+                          greedy = TRUE)
+
+# Calculate normalized x positions for version 2 with pigments overlays
+plot_left_v2_pig <- 0.105 
+plot_right_v2_pig <- 0.9
+plot_width_v2_pig <- plot_right_v2_pig - plot_left_v2_pig
+
+# Use the same climate boundaries as before
+x_norm_boundaries_pig <- plot_left_v2_pig + pmax(0, pmin(1, (climate_boundaries_interior - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_v2_pig
+
+# Calculate normalized positions for climate period labels
+x_norm_start_v2_pig <- plot_left_v2_pig + pmax(0, pmin(1, (climate_periods$start - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_v2_pig
+x_norm_end_v2_pig <- plot_left_v2_pig + pmax(0, pmin(1, (climate_periods$end - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_v2_pig
+
+# Calculate normalized positions for HSI no-data region
+hsi_nodata_norm_start_v2_pig <- plot_left_v2_pig + pmax(0, pmin(1, (hsi_nodata_start - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_v2_pig
+hsi_nodata_norm_end_v2_pig <- plot_left_v2_pig + pmax(0, pmin(1, (hsi_nodata_end - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_v2_pig
+
+# Calculate y position for hiatus rectangle (HSI data only - p4 through p6)
+# rel_heights: p4=1.2, p4_5=0.2, p4_6=0.2, p4_7=0.2, p6=0.9, p5=0.6, p1=0.9, p_pig_norm_v2=1.0, p2_v2_pig=1.3, total=7.3
+# Hiatus should only apply to HSI data (p4+temperature+p6), not additional pigment/Mn data
+total_height_pig <- 1.2 + 0.2 + 0.2 + 0.2 + 0.9 + 0.6 + 0.9 + 1.0 + 1.3
+top_plots_hsi_pig <- 1.2 + 0.2 + 0.2 + 0.2 + 0.9  # p4 through p6
+hiatus_ymax_pig <- 1 - (top_plots_hsi_pig / total_height_pig) * 0.87
+
+multiplot_v2_pig_with_lines <- ggdraw(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  # Add hiatus rectangle first (background) - only for lower 5 plots
+  ggpattern::geom_rect_pattern(aes(xmin = hsi_nodata_norm_start_v2_pig, xmax = hsi_nodata_norm_end_v2_pig,
+                                    ymin = 0.105, ymax = hiatus_ymax_pig),
+                               fill = "gray80", alpha = 0.1,
+                               pattern = "stripe", pattern_fill = "gray60",
+                               pattern_color = "gray60", pattern_density = 0.3,
+                               pattern_spacing = 0.01, pattern_angle = 45, 
+                               pattern_alpha = 0.1,
+                               color = "gray50", linetype = "dashed", linewidth = 0) +
+  # Draw the multiplot
+  draw_plot(multiplot_v2_with_pigments, x = 0, y = 0, width = 1, height = 1) +
+  # Add vertical dashed lines at climate period boundaries (on top of multiplot)
+  geom_segment(data = data.frame(x = x_norm_boundaries_pig),
+               aes(x = x, xend = x, y = 0.1, yend = 1),
+               linetype = "dashed", color = "gray30", linewidth = 0.5) +
+  # Add text labels for climate periods (above plot area)
+  geom_text(aes(x = (x_norm_start_v2_pig[1] + x_norm_end_v2_pig[1])/2, y = 1.02),
+            label = "Pleniglacial/ \nOldest Dryas", size = 3.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_v2_pig[2] + x_norm_end_v2_pig[2])/2, y = 1.02),
+            label = "Bølling", size = 3.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_v2_pig[3] + x_norm_end_v2_pig[3])/2, y = 1.02),
+            label = "Allerød", size = 3.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_v2_pig[4] + x_norm_end_v2_pig[4])/2, y = 1.02),
+            label = "Younger Dryas", size = 3.5, fontface = "bold") +
+  # Add label for hiatus
+  geom_text(aes(x = (hsi_nodata_norm_start_v2_pig + hsi_nodata_norm_end_v2_pig)/2, y = 0.77),
+            label = "Hiatus", size = 3.5, fontface = "bold", color = "gray30") +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1.05), clip = "off")
+
+print(multiplot_v2_pig_with_lines)
+
+# Save the plot
+ggsave("../figs/discussion_multiplot_v2_with_pigments.png", multiplot_v2_pig_with_lines,
+       width = 8.27, height = 7.5, dpi = 300)
+```
+
+# Version 2 with Pigment Communities - Bar Chart
+
+```{r fig.width=8.27, fig.height=7.5}
+# Create pigment communities plot as STACKED BAR CHART
+# Order from bottom to top: Pioneers, Secondary colonisers, Diatoms + Bacteria
+# Prepare data in long format with factor ordering for bottom-to-top stacking
+
+# Ensure data sums to 100% before creating bar chart
+Pig_by_group_for_bar <- Pig_by_group_norm_v2 %>% 
+  select(age, Pioneers, Secondary_colonisers, Diatoms_Bacteria) %>%
+  mutate(
+    row_total = Pioneers + Secondary_colonisers + Diatoms_Bacteria,
+    row_total = ifelse(row_total == 0, 1, row_total),
+    Pioneers = (Pioneers / row_total) * 100,
+    Secondary_colonisers = (Secondary_colonisers / row_total) * 100,
+    Diatoms_Bacteria = (Diatoms_Bacteria / row_total) * 100
+  ) %>%
+  select(-row_total)
+
+Pig_by_group_norm_bar <- Pig_by_group_for_bar %>% 
+  pivot_longer(cols = c(Pioneers, Secondary_colonisers, Diatoms_Bacteria),
+               names_to = "community", values_to = "percentage") %>%
+  # Set factor levels in REVERSE order for stacking: last level appears at bottom visually
+  # Order: Diatoms (top), Secondary (middle), Pioneers (bottom/base)
+  mutate(community = factor(community, levels = c("Diatoms_Bacteria", "Secondary_colonisers", "Pioneers")))
+
+# Create stacked bar chart
+p_pig_bar_v2 <- ggplot(Pig_by_group_norm_bar, aes(x = age, y = percentage, fill = community)) +
+  geom_col(position = "stack", width = 20, alpha = 0.5) +  # width controls bar thickness, alpha for transparency
+  scale_fill_manual(values = c("Pioneers" = "cyan",
+                                "Secondary_colonisers" = "green3",
+                                "Diatoms_Bacteria" = "mediumpurple3"),
+                    labels = c("Pioneers" = "Pioneers",
+                               "Secondary_colonisers" = "Secondary colonisers",
+                               "Diatoms_Bacteria" = "Diatoms + Bacteria"),
+                    name = "") +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(position = "right", expand = c(0, 0), limits = c(0, 100)) +
+  labs(x = "", y = "Pigment Communities\n(%, normalized)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 11),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title = element_text(size = 11, face = "bold"),
+        axis.line.x = element_blank(),
+        legend.position = c(0.61, -0.1),
+        legend.direction = "horizontal",
+        legend.background = element_blank(),
+        legend.title = element_text(size = 9),
+        legend.text = element_text(size = 8),
+        legend.key.size = unit(0.35, "cm"),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(0.5, 2, -5, 2))
+
+# Combine all plots with aligned x-axis (using bar chart for pigments)
+multiplot_v2_bar <- plot_grid(p4, p4_5, p4_6, p4_7, p6, p5, p1, p_pig_bar_v2, p2_v2_pig,
+                          ncol = 1,
+                          align = "v",
+                          axis = "lr",
+                          rel_heights = c(1.2, 0.2, 0.2, 0.2, 0.9, 0.7, 0.9, 0.9, 1.3),
+                          hjust = 0,
+                          vjust = 0,
+                          greedy = TRUE)
+
+# Calculate normalized x positions for version 2 with bar chart overlays
+plot_left_v2_bar <- 0.105 
+plot_right_v2_bar <- 0.9 
+plot_width_v2_bar <- plot_right_v2_bar - plot_left_v2_bar
+
+# Calculate normalized positions
+x_norm_boundaries_bar <- plot_left_v2_bar + pmax(0, pmin(1, (climate_boundaries_interior - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_v2_bar
+x_norm_start_v2_bar <- plot_left_v2_bar + pmax(0, pmin(1, (climate_periods$start - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_v2_bar
+x_norm_end_v2_bar <- plot_left_v2_bar + pmax(0, pmin(1, (climate_periods$end - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_v2_bar
+hsi_nodata_norm_start_v2_bar <- plot_left_v2_bar + pmax(0, pmin(1, (hsi_nodata_start - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_v2_bar
+hsi_nodata_norm_end_v2_bar <- plot_left_v2_bar + pmax(0, pmin(1, (hsi_nodata_end - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_v2_bar
+
+# Calculate y position for hiatus rectangle
+total_height_bar <- 1.2 + 0.25 + 0.9 + 0.7 + 0.9 + 0.9 + 1.3
+top_two_plots_bar <- 1.2 + 0.25
+hiatus_ymax_bar <- 1 - (top_two_plots_bar / total_height_bar) * 0.87
+
+multiplot_v2_bar_with_lines <- ggdraw(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  # Add hiatus rectangle first (background)
+  ggpattern::geom_rect_pattern(aes(xmin = hsi_nodata_norm_start_v2_bar, xmax = hsi_nodata_norm_end_v2_bar,
+                                    ymin = 0.105, ymax = hiatus_ymax_bar),
+                               fill = "gray80", alpha = 0.1,
+                               pattern = "stripe", pattern_fill = "gray60",
+                               pattern_color = "gray60", pattern_density = 0.3,
+                               pattern_spacing = 0.01, pattern_angle = 45, 
+                               pattern_alpha = 0.1,
+                               color = "gray50", linetype = "dashed", linewidth = 0) +
+  # Draw the multiplot
+  draw_plot(multiplot_v2_bar, x = 0, y = 0, width = 1, height = 1) +
+  # Add vertical dashed lines at climate period boundaries
+  geom_segment(data = data.frame(x = x_norm_boundaries_bar),
+               aes(x = x, xend = x, y = 0.1, yend = 1),
+               linetype = "dashed", color = "gray30", linewidth = 0.5) +
+  # Add text labels for climate periods
+  geom_text(aes(x = (x_norm_start_v2_bar[1] + x_norm_end_v2_bar[1])/2, y = 1.02),
+            label = "Pleniglacial", size = 3.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_v2_bar[2] + x_norm_end_v2_bar[2])/2, y = 1.02),
+            label = "Bølling", size = 3.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_v2_bar[3] + x_norm_end_v2_bar[3])/2, y = 1.02),
+            label = "Allerød", size = 3.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_v2_bar[4] + x_norm_end_v2_bar[4])/2, y = 1.02),
+            label = "Younger Dryas", size = 3.5, fontface = "bold") +
+  # Add label for hiatus
+  geom_text(aes(x = (hsi_nodata_norm_start_v2_bar + hsi_nodata_norm_end_v2_bar)/2, y = 0.77),
+            label = "Hiatus", size = 3.5, fontface = "bold", color = "gray30") +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1.05), clip = "off")
+
+print(multiplot_v2_bar_with_lines)
+
+# Save the plot
+ggsave("../figs/discussion_multiplot_v2_with_pigments_bar.png", multiplot_v2_bar_with_lines,
+       width = 8.27, height = 7.5, dpi = 300)
+```
+
+# Export Discussion Figure for Combined Panel (2/3 A4 width)
+
+This creates a version sized for panel A in the combined figure with adjusted font sizes. - Width: 2/3 of A4 = 14 cm - Height: increased to 14 cm for better spacing of 9 panels
+
+```{r fig.width=14/2.54, fig.height=14/2.54}
+# Create panel-sized version with smaller fonts for readability
+# Reduce all font sizes by ~40% for the smaller panel
+
+# Prepare data for plots
+heiri_for_plot_panel <- heiri_full %>%
+  mutate(
+    T_pos_scaled = T_pos * scaling_factor_heiri + offset_heiri,
+    T_neg_scaled = T_neg * scaling_factor_heiri + offset_heiri,
+    JulyT_scaled = JulyT_Heiri * scaling_factor_heiri + offset_heiri
+  )
+
+# Calculate y-axis limits for better visualization of variations
+ngrip_y_range <- range(ext_ngrip$`18O_NGRIP`, na.rm = TRUE)
+ngrip_y_limits <- c(ngrip_y_range[1] - 0.5, ngrip_y_range[2] + 0.5)
+
+heiri_y_range <- range(heiri_for_plot_panel$JulyT_scaled, na.rm = TRUE)
+ger_y_range <- range(ext_julyT$JulyT_Ger * scaling_factor_temp + offset_temp, na.rm = TRUE)
+temp_y_limits <- c(min(heiri_y_range[1], ger_y_range[1]) - 0.1, max(heiri_y_range[2], ger_y_range[2]) + 0.1)
+
+gdgt_raw_y_range <- range(ext_julyT_gdgt$JulyT_GDGT * scaling_factor_gdgt + offset_gdgt, na.rm = TRUE)
+gdgt_interp_y_range <- range(ext_julyT_gdgt_interp$JulyT_GDGT_interp * scaling_factor_gdgt + offset_gdgt, na.rm = TRUE)
+gdgt_y_range <- c(min(gdgt_raw_y_range[1], gdgt_interp_y_range[1]), max(gdgt_raw_y_range[2], gdgt_interp_y_range[2]))
+temp_y_limits_gdgt <- c(min(gdgt_y_range[1], ger_y_range[1]) - 0.1, max(gdgt_y_range[2], ger_y_range[2]) + 0.1)
+
+# Recreate pigment plot with smaller fonts
+p_pig_norm_panel <- ggplot() +
+  geom_ribbon(data = Pig_by_group_norm_plot_v2, 
+              aes(x = age, ymin = 0, ymax = Pioneers, fill = "Pioneers"), 
+              alpha = 0.5) +
+  geom_ribbon(data = Pig_by_group_norm_plot_v2, 
+              aes(x = age, ymin = Pioneers, ymax = Pioneers + Secondary_colonisers, fill = "Secondary colonisers"), 
+              alpha = 0.5) +
+  geom_ribbon(data = Pig_by_group_norm_plot_v2, 
+              aes(x = age, ymin = Pioneers + Secondary_colonisers, ymax = 100, fill = "Diatoms + Bacteria"), 
+              alpha = 0.5) +
+  scale_fill_manual(values = c("Pioneers" = "cyan",
+                                "Secondary colonisers" = "green3",
+                                "Diatoms + Bacteria" = "mediumpurple3"), name = "") +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(position = "right", expand = c(0, 0), limits = c(0, 100)) +
+  labs(x = "", y = "Pigment Communities\n(%, normalized)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 7),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title = element_text(size = 7, face = "bold"),
+        axis.line.x = element_blank(),
+        legend.position = c(0.61, -0.15),
+        legend.direction = "horizontal",
+        legend.background = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 5),
+        legend.key.size = unit(0.2, "cm"),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(-7, 0.1, -5, 0.1))
+
+# Recreate Mn plot with smaller fonts
+p2_panel <- ggplot(ext_mn, aes(x = age, y = Value, fill = Fraction)) +
+  geom_col(position = "stack", width = 18) +
+  scale_fill_manual(values = c("Mn_F2" = "#DDA0DD", "Mn_F3" = "#8B008B"),
+                    labels = c("Mn F2", "Mn F3")) +
+  scale_x_continuous(limits = age_limits, 
+                     breaks = seq(ceiling(age_limits[1]/100)*100, floor(age_limits[2]/100)*100, by = 100),
+                     labels = function(x) ifelse(x %% 200 == 0, as.character(x), ""),
+                     expand = c(0, 0)) +
+  scale_y_continuous(position = "left") +
+  labs(x = "Age (cal yr BP)", y = "Mn redox fractions\n(µg/g)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 7),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        axis.title = element_text(size = 7, face = "bold"),
+        legend.position = c(0.125, 0.42),
+        legend.background = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 6),
+        legend.key.size = unit(0.3, "cm"),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(-5, 0.1, 0, 0.1))
+
+# Recreate other plots with smaller fonts
+# Recalculate scaling factors for panel plots
+ngrip_y_range <- range(ext_ngrip$`18O_NGRIP`, na.rm = TRUE)
+ngrip_y_limits <- c(ngrip_y_range[1] - 0.5, ngrip_y_range[2] + 0.5)
+
+july_insol_range <- range(ext_insol_july$insol_July, na.rm = TRUE)
+jan_insol_range <- range(ext_insol_jan$insol_Jan, na.rm = TRUE)
+ngrip_panel_range <- range(ext_ngrip$`18O_NGRIP`, na.rm = TRUE)
+scaling_factor_july_insol <- (ngrip_panel_range[2] - ngrip_panel_range[1]) / (july_insol_range[2] - july_insol_range[1])
+offset_july_insol <- ngrip_panel_range[1] - july_insol_range[1] * scaling_factor_july_insol
+scaling_factor_jan_insol <- (ngrip_panel_range[2] - ngrip_panel_range[1]) / (jan_insol_range[2] - jan_insol_range[1])
+offset_jan_insol <- ngrip_panel_range[1] - jan_insol_range[1] * scaling_factor_jan_insol
+
+# Prepare annotation text for insolation value ranges
+july_insol_min <- round(min(ext_insol_july$insol_July, na.rm = TRUE), 1)
+july_insol_max <- round(max(ext_insol_july$insol_July, na.rm = TRUE), 1)
+jan_insol_min <- round(min(ext_insol_jan$insol_Jan, na.rm = TRUE), 1)
+jan_insol_max <- round(max(ext_insol_jan$insol_Jan, na.rm = TRUE), 1)
+insol_annotation <- paste0("Summer (red): ", july_insol_min, "-", july_insol_max, " W/m²\nWinter (blue): ", jan_insol_min, "-", jan_insol_max, " W/m²")
+
+p4_panel <- ggplot() +
+  # NGRIP raw and smoothed
+  geom_line(data = ext_ngrip_raw, aes(x = age, y = `18O_NGRIP`), 
+            color = "#2F4F4F", linewidth = 0.35, alpha = 0.1) +
+  geom_line(data = ext_ngrip, aes(x = age, y = `18O_NGRIP`), 
+            color = "#2F4F4F", linewidth = 0.5, alpha = 0.4) +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(
+    name = "δ18O \n NGRIP(‰)",
+    limits = ngrip_y_limits
+  ) +
+  labs(x = "") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 7),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y.left = element_text(size = 7, face = "bold", color = "#2F4F4F"),
+        axis.text.y.left = element_text(color = "#2F4F4F", size = 7),
+        axis.line.x = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(1, 0.1, -5, 0.1))
+
+
+# p4_insol_panel: Dedicated insolation panel with both summer (left) and winter (right) axes
+# p4_5_panel: Gerzensee July temperature (right axis only)
+p4_5_panel <- ggplot() +
+  geom_line(data = ext_julyT, aes(x = age, y = JulyT_Ger * scaling_factor_temp + offset_temp), 
+            color = "#FF6347", linewidth = 0.5, alpha = 1) +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(
+    position = "right",
+    labels = function(x) round((x - offset_temp) / scaling_factor_temp, 1)
+  ) +
+  labs(x = "", y = "July T \n Gerzensee(°C)") +
+  theme_classic() +  
+  theme(axis.text = element_text(size = 7),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y.right = element_text(size = 7, face = "bold", color = "#FF6347"),
+        axis.text.y.right = element_text(color = "#FF6347"),
+        axis.line.x = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(-10, 0.1, -15, 0.1))
+
+# p4_6_panel: Heiri2015 Temperature panel version
+p4_6_panel <- ggplot() +
+  # Heiri confidence interval (ribbon)
+  geom_ribbon(data = heiri_for_plot_panel, aes(x = age, ymin = T_neg_scaled, ymax = T_pos_scaled),
+              fill = "#DC143C", alpha = 0.15) +
+  # Heiri2015 as main comparison (full line)
+  geom_line(data = heiri_for_plot_panel, aes(x = age, y = JulyT_scaled), 
+            color = "#DC143C", linewidth = 0.5, alpha = 0.9, linetype = "solid") +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(
+    position = "left",
+    labels = function(x) round((x - offset_heiri) / scaling_factor_heiri, 1)
+  ) +
+  labs(x = "", y = "July T\n stack (°C)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 7),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y.left = element_text(size = 7, face = "bold", color = "#DC143C"),
+        axis.text.y.left = element_text(color = "#DC143C", size = 7),
+        axis.line.x = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(-10, 0.1, -15, 0.1))
+
+# p4_7_panel: GDGT Temperature panel version with interpolated data
+p4_7_panel <- ggplot() +
+  # Raw GDGT data (thin, light)
+  geom_line(data = ext_julyT_gdgt, aes(x = age, y = JulyT_GDGT * scaling_factor_gdgt + offset_gdgt), 
+            color = "#228B22", linewidth = 0.3, alpha = 0.5, linetype = "solid") +
+  # Interpolated GDGT as main comparison (darker, dotted)
+  geom_line(data = ext_julyT_gdgt_interp, aes(x = age, y = JulyT_GDGT_interp * scaling_factor_gdgt + offset_gdgt), 
+            color = "#228B22", linewidth = 0.5, alpha = 0.9, linetype = "dotted") +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(
+    position = "right",
+    labels = function(x) round((x - offset_gdgt) / scaling_factor_gdgt, 1)
+  ) +
+  labs(x = "", y = "GDGT Temp.\n(°C)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 7),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y.right = element_text(size = 7, face = "bold", color = "#228B22"),
+        axis.text.y.right = element_text(color = "#228B22", size = 7),
+        axis.line.x = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(-10, 0.1, -15, 0.1))
+
+p6_panel <- ggplot() +
+  # Smoothed data - before hiatus
+  geom_line(data = hsi_total_chl_before, aes(x = age, y = Total_Chl),
+            color = "#228B22", linewidth = 0.5, alpha = 0.5) +
+  # Smoothed data - after hiatus
+  geom_line(data = hsi_total_chl_after, aes(x = age, y = Total_Chl),
+            color = "#228B22", linewidth = 0.5, alpha = 0.5) +
+  # Raw data - before hiatus
+  geom_line(data = hsi_total_chl_raw_before, aes(x = age, y = Total_Chl),
+            color = "#228B22", linewidth = 0.35, alpha = 1) +
+  # Raw data - after hiatus
+  geom_line(data = hsi_total_chl_raw_after, aes(x = age, y = Total_Chl),
+            color = "#228B22", linewidth = 0.35, alpha = 1) +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(position = "left") +
+  geom_hline(yintercept=2.63, color="forestgreen", linetype = 1, linewidth=0.2, alpha = 0.9) +
+  labs(x = "", y = "Total Chlorophylls\n(µg/g)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 7),
+        axis.text.x = element_blank(),
+        axis.title.y = element_text(size = 7, face = "bold", color = "#228B22"),
+        axis.line.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(-10, 0.1, -10, 0.1))
+
+p5_panel <- ggplot() +
+  # Real data (young) - solid fill with standard alpha
+  geom_area(data = betula_real_young, aes(x = age, y = BetulaHZM), 
+            fill = "#FFA500", alpha = 0.3) +
+  # Real data (old) - solid fill with standard alpha
+  geom_area(data = betula_real_old, aes(x = age, y = BetulaHZM), 
+            fill = "#FFA500", alpha = 0.6) +
+  # Modeled data - patterned fill with diagonal lines
+  ggpattern::geom_area_pattern(data = betula_modeled, aes(x = age, y = BetulaHZM),
+            fill = "#FFA500", alpha = 0.1,
+            pattern = "stripe",
+            pattern_fill = "#FF8C00",
+            pattern_colour = "#FFA500",
+            pattern_density = 0.1,
+            pattern_spacing = 0.05,
+            pattern_alpha = 0.3,
+            pattern_angle = 45) +
+  # Solid line for real data
+  geom_line(data = betula_real_young, aes(x = age, y = BetulaHZM), 
+            color = "#FF8C00", linewidth = 0.35) +
+  geom_line(data = betula_real_old, aes(x = age, y = BetulaHZM), 
+            color = "#FF8C00", linewidth = 0.35) +
+  # Dashed line for modeled data
+  geom_line(data = betula_modeled, aes(x = age, y = BetulaHZM), 
+            color = "#FF8C00", linewidth = 0.35, linetype = "dashed") +
+  # Add "modelled" text in the middle of the modeled section
+  annotate("text", x = mean(c(12700, 13258)), y = 7, 
+           label = "modelled", size = 2, fontface = "italic", color = "#8B4500") +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(position = "right", limits = c(0, 36)) +
+  labs(x = "", y = "Betula HZM\n(%)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 7),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 7, face = "bold", color = "#FF8C00"),
+        axis.line.x = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(-10, 0.1, -10, 0.1))
+
+p1_panel <- ggplot() +
+  # Smoothed data - before hiatus
+  geom_line(data = hsi_bphe_before, aes(x = age, y = Bacteriopheophytin_a),
+            color = "#9370DB", linewidth = 0.5, alpha = 0.5) +
+  # Smoothed data - after hiatus
+  geom_line(data = hsi_bphe_after, aes(x = age, y = Bacteriopheophytin_a),
+            color = "#9370DB", linewidth = 0.5, alpha = 0.5) +
+  # Raw data - before hiatus
+  geom_line(data = hsi_bphe_raw_before, aes(x = age, y = Bacteriopheophytin_a),
+            color = "#9370DB", linewidth = 0.35, alpha = 1) +
+  # Raw data - after hiatus
+  geom_line(data = hsi_bphe_raw_after, aes(x = age, y = Bacteriopheophytin_a),
+            color = "#9370DB", linewidth = 0.35, alpha = 1) +
+  scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
+  scale_y_continuous(position = "left") +
+  geom_hline(yintercept=0.48, color="purple", linetype = 1, linewidth=0.25, alpha = 0.9) +
+  labs(x = "", y = "Bacteriopheophytin a\n(µg/g)") +
+  theme_classic() +
+  theme(axis.text = element_text(size = 7),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 7, face = "bold", color = "#9370DB"),
+        axis.line.x = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank(),
+        plot.margin = margin(-5, 0.1, -10, 0.1))
+
+# Combine all plots
+multiplot_panel <- plot_grid(p4_panel, p4_5_panel, p4_6_panel, p4_7_panel, p6_panel, p4_8, p5_panel, p1_panel, p_pig_norm_panel, p2_panel,
+                          ncol = 1,
+                          align = "v",
+                          axis = "lr",
+                          rel_heights = c(1.2, 0.4, 0.4, 0.4, 1, 0.7, 0.7, 0.9, 0.6, 1.3),
+                          hjust = 0,
+                          vjust = 0,
+                          greedy = TRUE)
+
+# Add overlays with adjusted positioning and font sizes
+plot_left_panel <- 0.105 
+plot_right_panel <- 0.9
+plot_width_panel <- plot_right_panel - plot_left_panel
+
+x_norm_boundaries_panel <- plot_left_panel + pmax(0, pmin(1, (climate_boundaries_interior - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_panel
+x_norm_start_panel <- plot_left_panel + pmax(0, pmin(1, (climate_periods$start - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_panel
+x_norm_end_panel <- plot_left_panel + pmax(0, pmin(1, (climate_periods$end - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_panel
+
+hsi_nodata_norm_start_panel <- plot_left_panel + pmax(0, pmin(1, (hsi_nodata_start - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_panel
+hsi_nodata_norm_end_panel <- plot_left_panel + pmax(0, pmin(1, (hsi_nodata_end - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_panel
+
+total_height_panel <- 1.2 + 0.45 + 1 + 0.7 + 0.7 + 0.9 + 1.0 + 1.3
+top_two_plots_panel <- 1.2 + 0.45 + 0.7
+hiatus_ymax_panel <- 1 - (top_two_plots_panel / total_height_panel) * 0.9
+
+multiplot_panel_with_lines <- ggdraw(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  # Add hiatus rectangle
+  ggpattern::geom_rect_pattern(aes(xmin = hsi_nodata_norm_start_panel, xmax = hsi_nodata_norm_end_panel,
+                                    ymin = 0.1, ymax = hiatus_ymax_panel),
+                               fill = "gray80", alpha = 0.1,
+                               pattern = "stripe", pattern_fill = "gray60",
+                               pattern_color = "gray60", pattern_density = 0.3,
+                               pattern_spacing = 0.01, pattern_angle = 45, 
+                               pattern_alpha = 0.1,
+                               color = "gray50", linetype = "dashed", linewidth = 0) +
+  draw_plot(multiplot_panel, x = 0, y = 0, width = 1, height = 1) +
+  # Add vertical dashed lines
+  geom_segment(data = data.frame(x = x_norm_boundaries_panel),
+               aes(x = x, xend = x, y = 0.1, yend = 1),
+               linetype = "dashed", color = "gray30", linewidth = 0.3) +
+  # Add text labels with smaller fonts
+  geom_text(aes(x = (x_norm_start_panel[1] + x_norm_end_panel[1])/2, y = 1.02),
+            label = "Pleniglacial", size = 2.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_panel[2] + x_norm_end_panel[2])/2, y = 1.02),
+            label = "Bølling", size = 2.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_panel[3] + x_norm_end_panel[3])/2, y = 1.02),
+            label = "Allerød", size = 2.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_panel[4] + x_norm_end_panel[4])/2, y = 1.02),
+            label = "Younger Dryas", size = 2.5, fontface = "bold") +
+  # Add hiatus label
+  geom_text(aes(x = (hsi_nodata_norm_start_panel + hsi_nodata_norm_end_panel)/2, y = 0.5),
+            label = "Hiatus", size = 2.5, fontface = "bold", color = "gray30") +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1.05), clip = "off")
+
+print(multiplot_panel_with_lines)
+
+# Save panel-sized figure with transparent background
+ggsave("../figs/discussion_multiplot_v2_with_pigments_panel.png", multiplot_panel_with_lines,
+       width = 14, height = 9.9, units = "cm", dpi = 300, bg = "transparent")
+
+cat("Panel A figure saved: ../figs/discussion_multiplot_v2_with_pigments_panel.png\n")
+cat("Dimensions: 14 × 9.9 cm (2/3 A4 width × 1/3 A4 height) at 300 DPI\n")
+
+# Save as SVG for vector graphics
+ggsave("../figs/FigDiscussion.svg",
+       plot = multiplot_panel_with_lines,
+       width = 14, height = 12.5, units = "cm", dpi = 220)
+```
+
+# Export Pinus + Betula Combined Panel Figure
+
+```{r}
+# Create combined Pinus + Betula figure showing modelled extension
+pinus_betula_combined <- plot_grid(p4_8, p5_panel,
+                                    ncol = 1,
+                                    align = "v",
+                                    axis = "lr",
+                                    rel_heights = c(0.7, 0.7),
+                                    hjust = 0,
+                                    vjust = 0,
+                                    greedy = TRUE)
+
+# Add overlays
+plot_left_panel_pb <- 0.105 
+plot_right_panel_pb <- 0.9
+plot_width_panel_pb <- plot_right_panel_pb - plot_left_panel_pb
+
+hsi_nodata_norm_start_panel_pb <- plot_left_panel_pb + pmax(0, pmin(1, (hsi_nodata_start - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_panel_pb
+hsi_nodata_norm_end_panel_pb <- plot_left_panel_pb + pmax(0, pmin(1, (hsi_nodata_end - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_panel_pb
+
+x_norm_boundaries_panel_pb <- plot_left_panel_pb + pmax(0, pmin(1, (climate_boundaries_interior - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_panel_pb
+x_norm_start_panel_pb <- plot_left_panel_pb + pmax(0, pmin(1, (climate_periods$start - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_panel_pb
+x_norm_end_panel_pb <- plot_left_panel_pb + pmax(0, pmin(1, (climate_periods$end - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_panel_pb
+
+pinus_betula_with_overlays <- ggdraw(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  # Add hiatus rectangle
+  ggpattern::geom_rect_pattern(aes(xmin = hsi_nodata_norm_start_panel_pb, xmax = hsi_nodata_norm_end_panel_pb,
+                                    ymin = 0.1, ymax = 1),
+                               fill = "gray80", alpha = 0.1,
+                               pattern = "stripe", pattern_fill = "gray60",
+                               pattern_color = "gray60", pattern_density = 0.3,
+                               pattern_spacing = 0.01, pattern_angle = 45, 
+                               pattern_alpha = 0.1,
+                               color = "gray50", linetype = "dashed", linewidth = 0) +
+  draw_plot(pinus_betula_combined, x = 0, y = 0, width = 1, height = 1) +
+  # Add vertical dashed lines
+  geom_segment(data = data.frame(x = x_norm_boundaries_panel_pb),
+               aes(x = x, xend = x, y = 0.1, yend = 1),
+               linetype = "dashed", color = "gray30", linewidth = 0.3) +
+  # Add text labels
+  geom_text(aes(x = (x_norm_start_panel_pb[1] + x_norm_end_panel_pb[1])/2, y = 1.02),
+            label = "Pleniglacial", size = 2.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_panel_pb[2] + x_norm_end_panel_pb[2])/2, y = 1.02),
+            label = "Bølling", size = 2.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_panel_pb[3] + x_norm_end_panel_pb[3])/2, y = 1.02),
+            label = "Allerød", size = 2.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_panel_pb[4] + x_norm_end_panel_pb[4])/2, y = 1.02),
+            label = "Younger Dryas", size = 2.5, fontface = "bold") +
+  # Add hiatus label
+  geom_text(aes(x = (hsi_nodata_norm_start_panel_pb + hsi_nodata_norm_end_panel_pb)/2, y = 0.5),
+            label = "Hiatus", size = 2.5, fontface = "bold", color = "gray30") +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1.05), clip = "off")
+
+print(pinus_betula_with_overlays)
+
+# Save Pinus + Betula figure as PNG
+ggsave("../figs/Pinus_Betula_pollen_combined.png", pinus_betula_with_overlays,
+       width = 14, height = 6, units = "cm", dpi = 300, bg = "transparent")
+
+cat("Pinus + Betula combined figure saved: ../figs/Pinus_Betula_pollen_combined.png\n")
+cat("Dimensions: 14 × 6 cm at 300 DPI\n")
+
+# Save as SVG for vector graphics
+ggsave("../figs/Pinus_Betula_pollen_combined.svg",
+       plot = pinus_betula_with_overlays,
+       width = 14, height = 6, units = "cm", dpi = 220)
+
+cat("Vector version saved: ../figs/Pinus_Betula_pollen_combined.svg\n")
+```

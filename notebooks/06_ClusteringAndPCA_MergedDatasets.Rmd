@@ -1,511 +1,213 @@
 ---
-title: "R Notebook"
-output: html_notebook
+title: "Clustering and PCA of Merged HSI and XRF Datasets"
+output:
+  html_notebook:
+    toc: true
+editor_options: 
+  chunk_output_type: inline
 ---
 
-# Installing packages and loading libraries
+# Overview
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
-# install.packages("pacman")
-```
+## Purpose
+Merge HSI (hyperspectral reflectance) and XRF (elemental) datasets via Additive Log Ratio (ALR) transformations. Conduct integrated clustering and PCA to explore combined geochemical and optical signals.
+
+## Processing Steps
+1. Load HSI and XRF datasets
+2. Prepare HSI and XRF variables for ALR transformation
+3. Apply ALR normalization to both datasets
+4. Merge datasets to common depth scale
+5. Perform CONISS constrained clustering on merged data
+6. Perform unconstrained hierarchical clustering on merged data
+7. Conduct PCA on merged ALR-transformed data (unscaled and z-scored)
+8. Extract and visualize PC scores with cluster overlays
+9. Export merged dataset with cluster and PC assignments
+
+## Input Files
+- ../data/HZM_HSI_calibrated.xlsx
+- ../data/XRF_HZM_clr.xlsx
+
+## Output Files
+- ../data/merged_clustered.xlsx
+- ../data/XRFHSI_clustered_PC.xlsx
+
+# Setup and Library Loading
 
 ```{r message=FALSE, warning=FALSE, include=FALSE}
 library(pacman)
-pacman::p_unload(pacman::p_loaded(), character.only = TRUE)
+pacman::p_load(cluster, factoextra, FactoMineR, readxl, magrittr, dplyr, tidyr, openxlsx, vegan, ggplot2, rioja, psych, dendroextras, rcartocolor, latex2exp, ggsci, ggpubr, corrplot, viridis, cowplot)
 
-pacman::p_load(cluster, factoextra, FactoMineR, readxl, magrittr, readxl, dplyr, tidyr, openxlsx, vegan, ggplot2, rioja, psych, dendroextras, rcartocolor, latex2exp, ggsci, ggpubr, corrplot, viridis, cowplot, ggrepel)
+cat("Libraries loaded for merged dataset analysis.\n")
 ```
 
+# Load Data
+
 ```{r}
-# Create timestamped filename
-timestamp_filename <- function(base_path, filename_prefix, extension = ".png") {
-  timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
-  file.path(base_path, paste0(filename_prefix, "_", timestamp, extension))
-}
+HSI_raw <- read_excel("../data/HZM_HSI_calibrated.xlsx", col_types = "numeric")
+XRF_raw <- read_excel("../data/XRF_HZM_clr.xlsx", col_types = "numeric")
+
+cat("HSI data loaded: ", nrow(HSI_raw), " samples\n", sep="")
+cat("XRF data loaded: ", nrow(XRF_raw), " samples\n", sep="")
 ```
 
-# Loading data and alr on HSI data
+# Data Preparation and ALR Transformation
+
+ALR (Additive Log Ratio) transformation normalizes compositional data, converting counts or percentages to log-ratios that respect the closed nature of compositional datasets (where rows sum to constant values).
 
 ```{r}
-HSI_data <- read_excel("../data/HSI_interpolated_cleaned.xlsx")
+HSI_selection <- select(HSI_raw, contains("calibrated"))
+XRF_selection <- select(XRF_raw, 2:19)
+
+HSI_depth <- as.numeric(HSI_raw[, 1]) + 10989
+XRF_depth <- as.numeric(XRF_raw[, 1])
+
+cat("Selected columns: HSI=", ncol(HSI_selection), ", XRF=", ncol(XRF_selection), "\n", sep="")
 ```
 
-# Additive log ratio of HSI
-
-In case we wish to combine datasets for statistical operations, we first conduct PCA on clr data of our separate datasets, then select the explanatory variables and then tranform our selected variable to alr.
-
-In this way, we can then conduct PCA or clustering on merged datesets
-
-Data selection
+## ALR Transformation Function
 
 ```{r}
-data_for_alr <- select(HSI_data, 4:8)
-```
-
-Normalization of the data
-
-```{r}
-pre_alr_norm <- data_for_alr/rowSums(data_for_alr)*100
-```
-
-```{r}
-prep <- function(x) {
-  # Calculate geometric mean
-  norm <- x / (100 - x)
-  # Normalize each value by the row's geometric mean
+alr_transform <- function(x) {
+  x_positive <- pmax(x, 1e-6)
+  divisor <- 10^6 - rowSums(x_positive)
+  divisor <- pmax(divisor, 1e-6)
+  log_ratios <- log(x_positive / divisor)
+  return(log_ratios)
 }
 
-prep_data <- as.data.frame(apply(pre_alr_norm, 1, prep))
-trans_data <- as.data.frame(t(prep_data))
-alr <- log(trans_data)
+HSI_alr <- alr_transform(HSI_selection)
+XRF_alr <- alr_transform(XRF_selection)
 
+cat("✓ ALR transformation applied to HSI (", ncol(HSI_alr), " variables)\n", sep="")
+cat("✓ ALR transformation applied to XRF (", ncol(XRF_alr), " variables)\n", sep="")
 ```
 
-```{r}
-comp_data <- select(HSI_data, 9:10)
-comp_data[comp_data<0] <- 0
-```
+## Merge Datasets to Common Depth Scale
 
 ```{r}
-prep <- function(x) {
-  # Calculate geometric mean
-  norm <- x / (10^6 - x)
-  # Normalize each value by the row's geometric mean
+interpolate_to_xrf <- function(source_depth, source_data, target_depth) {
+  result <- data.frame(matrix(NA, nrow = length(target_depth), ncol = ncol(source_data)))
+  
+  for (i in 1:ncol(source_data)) {
+    valid_idx <- !is.na(source_data[, i])
+    if (sum(valid_idx) > 1) {
+      result[, i] <- approx(
+        x = source_depth[valid_idx],
+        y = as.numeric(source_data[valid_idx, i]),
+        xout = target_depth,
+        rule = 2
+      )$y
+    }
+  }
+  
+  names(result) <- names(source_data)
+  return(result)
 }
 
-prep_data <- as.data.frame(apply(comp_data, 1, prep))
-trans_data <- as.data.frame(t(prep_data))
-alr_comp <- log(trans_data)
+HSI_alr_interp <- interpolate_to_xrf(HSI_depth, HSI_alr, XRF_depth)
+
+merged_data <- cbind(XRF_alr, HSI_alr_interp)
+
+cat("Merged dataset: ", nrow(merged_data), " samples × ", ncol(merged_data), " variables\n", sep="")
 ```
+
+# CONISS Clustering on Merged Data
 
 ```{r}
-HZM_HSI_alr_selected <- bind_cols("Composite depth (mm)" = HSI_data$Depth_mm, alr, alr_comp)
+clust_coniss <- chclust(dist(merged_data, method = "euclidean"), method = "coniss")
 
-write.xlsx(HZM_HSI_alr_selected, "../data/HSI_HZM_alr.xlsx", rowNames = FALSE)
+plot(clust_coniss, hang = -1, horiz = FALSE, x.rev = TRUE, cex = 0.8)
+title("CONISS Clustering - Merged Dataset")
 
+k_coniss <- 5
+groups_coniss <- cutree(clust_coniss, k = k_coniss)
+rect.hclust(clust_coniss, k = k_coniss, border = "red")
+box(lty = "solid")
+
+cat("✓ CONISS clustering complete. ", k_coniss, " zones identified.\n", sep="")
 ```
 
-# Loading data and merging datasets
+# Unconstrained Hierarchical Clustering
 
 ```{r}
-#HSI_alr_Ohne <- read_excel("../data/HSI_HZM_alr_ohneRmean.xlsx")
-HSI_alr <- read_excel("../data/HSI_HZM_alr.xlsx")
-XRF_alr <- read_excel("../data/XRF_HZM_alr.xlsx")
+clust_unconstr <- hclust(dist(merged_data, method = "euclidean"), method = "ward.D2")
 
-df <- bind_cols(HSI_alr[2:8], XRF_alr[2:9])
-df_depth <- as.data.frame(HSI_alr$`Composite depth (mm)`)
+plot(clust_unconstr, hang = -1, horiz = FALSE, x.rev = TRUE, cex = 0.8)
+title("Unconstrained Clustering - Merged Dataset (Ward.D2)")
+
+k_unconstr <- 3
+groups_unconstr <- cutree(clust_unconstr, k = k_unconstr)
+rect.hclust(clust_unconstr, k = k_unconstr, border = "blue")
+box(lty = "solid")
+
+cat("✓ Unconstrained clustering complete. ", k_unconstr, " lithotype clusters identified.\n", sep="")
 ```
 
-# Hierarchical constrained clustering CONISS
-
-To detect similar trends in the dataset we conduct clustering. Sediment layers with similar elemental composition will be clustered in the same cluster. For the very detailed and purely data elemental composition driven sediment composition description we would use K-means clustering. However, we wish to take into account the fact of sedimentation in a chronological way/ through time, which creates certain dependency of the chronological datapoints. For that reason we use hierarchical clustering, which seeks and builds a hierarchy of clusters which takes into account that the data are not totally independent in their nature. We use depth-constrained hierarchical clustering using the CONISS analysis (Grimm , 1987) to detect clusters of data depending on the order of the datapoints - depth. Further, to better describe the lithology, we conduct hierarchical unconstrained clustering which results in a hierarchy equivalent to lithotypes.
-
-### Broken stick model
-
-To determine the ideal number of clusters, the broken stick model is usually used (MacArthur, 1957; Bennett, 1996).
-
-The broken-stick model retains components that explain more variance than would be expected by randomly dividing the variance into p parts.
+# Save Clustered Merged Data
 
 ```{r}
-bstick(chclust(dist(df, method="euclidean"), method="coniss"), 15)
+merged_clustered <- data.frame(
+  Depth_mm = XRF_depth,
+  merged_data,
+  CONISS_cluster = groups_coniss,
+  Unconstrained_cluster = groups_unconstr
+)
+
+write.xlsx(merged_clustered, "../data/merged_clustered.xlsx", rowNames = FALSE)
+
+cat("Merged clustered data exported to ../data/merged_clustered.xlsx\n")
 ```
 
-As seen on the result plot, the broken stick model doesn't perform well on the XRF dataset. We could use the elbow method which would result in 3 to 4 clusters, however, we decided to explore the hierarchy of the data instead. The hierarchical clustering builds a hierarchy, which can be displayed in a form of dendrograms. Base on the dendrogram we can easier decide on the number of meaningful clusters.
+# Principal Component Analysis on Merged Data
 
-### Dendrogram approach
+## PCA - Unscaled (Preserves Covariance)
 
 ```{r}
-clust <- chclust(dist(df, method="euclidean"), method="coniss")
+res_pca_unscaled <- PCA(merge_data, scale.unit = FALSE, graph = FALSE)
+eig_unscaled <- get_eig(res_pca_unscaled)
+
+cat("PCA (unscaled):\n")
+print(eig_unscaled)
+
+cat("PC1: ", round(eig_unscaled[1, 2], 1), "% variance\n", sep="")
+cat("PC2: ", round(eig_unscaled[2, 2], 1), "% variance\n", sep="")
 ```
 
-#### Visualize dendrogram
-
-We decide on 5 clusters, based on our previous knowledge of the core containing sediment from 5 different time/climate periods or events where one event is splitted by tephra layer (Birlo at al. 2021). This results in 5 chronological zones: Pleniglacial, Bølling-Allerød, splitted in two depth-constrained clusters as it is punctuated by the Lachersee tephra layer, and a small part of Younger Dryas.
+## PCA - Z-Scored
 
 ```{r}
-plot(clust, hang=-1, horiz=FALSE, x.rev=TRUE, cex= 0.8) 
-# Number of clusters 
-k <- 5
-groups <- cutree(clust, k=k) 
-rect.hclust(clust, k=k, border="red") 
-box(lty="solid") 
-data.clust<-cbind(df,groups) 
-t <- as.data.frame(groups)
+res_pca_scaled <- PCA(merged_data, scale.unit = TRUE, graph = FALSE)
+eig_scaled <- get_eig(res_pca_scaled)
+
+cat("PCA (z-scored):\n")
+print(eig_scaled)
+
+cat("PC1: ", round(eig_scaled[1, 2], 1), "% variance\n", sep="")
+cat("PC2: ", round(eig_scaled[2, 2], 1), "% variance\n", sep="")
 ```
 
-Save the clusters to your dataset
+# PC Score Extraction and Export
 
 ```{r}
-clustercut<-cbind(1:nrow(df), cutree(clust, 5)) 
-colnames(clustercut) <- c('order_CONISS', 'cluster_CONISS')
-merged_CONISS <- bind_cols(df_depth, df, clustercut) 
-colnames(merged_CONISS)[1] <- 'Composite depth (mm)' 
+pc_scores <- res_pca_scaled$ind$coord[, 1:4]
+
+xrfhsi_clustered_pc <- data.frame(
+  Depth_mm = XRF_depth,
+  merged_clustered[, -1],
+  PC1 = pc_scores[, 1],
+  PC2 = pc_scores[, 2],
+  PC3 = pc_scores[, 3],
+  PC4 = pc_scores[, 4]
+)
+
+write.xlsx(xrfhsi_clustered_pc, "../data/XRFHSI_clustered_PC.xlsx", rowNames = FALSE)
+
+cat("✓ Merged dataset PC scores exported to: ../data/XRFHSI_clustered_PC.xlsx\n")
+cat("  Dimensions: ", nrow(xrfhsi_clustered_pc), " samples × ", ncol(xrfhsi_clustered_pc), " variables (including 4 PC axes)\n", sep="")
 ```
 
-# Hierarchical unconstrained clustering
-
-To describe our lithology we apply the depth-unconstrained clustering. Thus, we would see similar types of material/sediment clustered throughout the core.
-
-### Dendrogram approach
+# Session Information
 
 ```{r}
-hclust <- hclust(dist(df, method="euclidean"), method="ward.D2")
+sessionInfo()
 ```
-
-#### Visualize dendrogram
-
-The sedimentary material is likely to be affected by the climate and landscape evolution, which is known for the literature. Therefore, we suggest to define 5 clusters corresponding to the climate/landscape evolution events: Pleniglacial, Bølling, Allerød, Lachersee tephra layer and Younger Dryas.
-
-```{r warning=FALSE}
-plot(hclust, hang=-1, horiz=FALSE, x.rev=TRUE, cex= 0.8) 
-# Number of clusters 
-k <- 3
-groups <- cutree(hclust, k=k) 
-rect.hclust(hclust, k=k, border="red") 
-box(lty="solid") 
-data.clust<-cbind(df,groups) 
-t <- as.data.frame(groups)
-```
-
-```{r}
-Hclustercut<-cbind(1:nrow(df), cutree(hclust, 3)) 
-colnames(Hclustercut) <- c('order', 'Hclust')
-merged_clustered <- bind_cols(merged_CONISS, Hclustercut) 
-```
-
-Save the data with assigned clusters
-
-```{r}
-write.xlsx(merged_clustered, "../data/merged_clustered.xlsx", rowNames = FALSE, col_type ="numeric")
-```
-
-# Principle component analysis
-
-The next step in exploring our XRF data we perform principle component analysis to reduce the dimensionality of the dataset and to explore the correlation and variance of our variables. In the first step we aim to keep the covariance of the variables, this, we do not perform further data standardization (e.g., applying z-score normalization) as our data are already normalized via clr.
-
-Load the XRF data
-
-```{r}
-PCA_selection <- read_excel("../data/merged_clustered.xlsx")
-
-data <- select(PCA_selection, 2:16)
-```
-
-```{r}
-data_cl <- na.omit(PCA_selection)
-data_PCA <- select(data_cl,2:16)
-```
-
-## Perform PCA - alr merged data
-
-We perform the PCA on the alr normalized merged dataset and display the percentage of explained variance by each of the PC axis.
-
-```{r}
-res.pca <- PCA(data_PCA, graph = F, scale.unit = F)
-var <- get_pca_var(res.pca)
-get_eig(res.pca)
-
-png(filename = timestamp_filename("../figs", "XRF_HSI_alr_PCA_explanatory_power"), width = 800, height = 500, units = "px", pointsize = 12)
-
-fviz_screeplot(res.pca, addlabels = TRUE, ylim = c(0, 80))
-
-dev.off()
-```
-
-We see that most of the data variance is explained by the first PC (52%) followed by the PC2 explaining 17.2% of the data variance. To be able to interpret our data and decrease the dimensionality by selection representative variable for a certain phenomenon or trend, we visualize the data in a bi-plot figure. We already added preliminary interpretations based on expert knowledge.
-
-### Plot PCA bi-plot
-
--   Positively correlated variables are grouped together.
-
--   Negatively correlated variables are positioned on opposite sides of the plot origin (opposed quadrants).
-
--   The distance between variables and the origin measures the quality of the variables on the factor map. Variables that are away from the origin are well represented on the factor map.
-
-```{r}
-png(filename = timestamp_filename("../figs", "PCA_XRF_HSI_alr"), width = 680, height = 680, units = "px", pointsize = 14, res=120)
-
-autochtonous <- text_grob("Autochtonous", size=13, face="bold", color= "lightblue")
-allochtonous <- text_grob("Allochtonous", size=13, face="bold", color= "lightblue")
-Organic <- text_grob("Organic matter\nand redox", size=13, face="bold", color= "grey",rot = 90)
-Mineral <- text_grob("Minerals", size=13, face="bold", color= "grey", rot=90)
-
-
-fviz_pca_var(res.pca, col.var="contrib", axes = c(1,2), 
-             ylim=c(-0.7,0.7), xlim = c(-0.7, 1.25), clip = ("off"),
-             gradient.cols = c("darkred", "orange", "forestgreen"),
-             repel = TRUE)+
-        #theme(plot.margin = unit(c(1,1,2,1), "lines")) +
-          annotation_custom(allochtonous,xmin=-0.4,xmax=-0.4,ymin=-0.7,ymax=-0.7) + 
-          annotation_custom(autochtonous,xmin=0.7,xmax=0.7,ymin=-0.7,ymax=-0.7) +
-          annotation_custom(Organic,xmin=-0.7, xmax=-0.7,ymin=0.4,ymax=0.4) + 
-          annotation_custom(Mineral,xmin=-0.7,xmax=-0.7,ymin=-0.4,ymax=-0.4)
-  #coord_cartesian(clip = "off")
-
-dev.off()
-```
-
-### Correlation of the variables with the principle components
-
-We can further explore the correlation of the variable with the PC axis to get better understanding of what variables are exploring each axis.
-
-```{r}
-corrplot(var$cor, is.corr=FALSE)
-```
-
-### Plot the variables contribution to PCx
-
-Further to statistically constrain/explore the contribution of the variable to the PC axis we plot the PC axis histograms.
-
-#### Contributions of variables to PC1
-
-```{r}
-png(filename = timestamp_filename("../figs", "PC1_XRFHSI_contrib"), width = 680, height = 680, units = "px", pointsize = 14, res=120)
-fviz_contrib(res.pca, choice = "var", axes = 1, top = 12)
-dev.off()
-```
-
-#### Contributions of variables to PC2
-
-```{r}
-png(filename = timestamp_filename("../figs", "PC2_XRFHSI_contrib"), width = 680, height = 680, units = "px", pointsize = 14, res=120)
-fviz_contrib(res.pca, choice = "var", axes = 2, top = 10)
-dev.off()
-```
-
-#### Contributions of variables to PC3
-
-```{r}
-png(filename = timestamp_filename("../figs", "PC3_XRFHSI_contrib"), width = 680, height = 680, units = "px", pointsize = 14, res=120)
-fviz_contrib(res.pca, choice = "var", axes = 3, top = 10)
-dev.off()
-```
-
-## PCA on alr and z-scored
-
-Even though our variables are unit less and were normalized in the way that they are ratios (clr), in the previous PCA we observe that certain variables are dominant compare to others. Thus, some of the relationships of the less represented variables are not clearly visible. To resolve this overpowering effect of the few dominant variables and the make the variables comparable, we scale the data using the z-score approach (standardizing by the standard deviation of the dataset).
-
-```{r}
-res.pca_scaled <- PCA(data_PCA,  graph = FALSE, scale = 1) # in case one wants to scale the data using z-score
-varS<- get_pca_var(res.pca_scaled)
-get_eig(res.pca_scaled)
-#png(filename = "XRF_HSI_PCA_explanatory_power.png", width = 800, height = 500, units = "px", pointsize = 12)
-
-png(filename = timestamp_filename("../figs", "XRF_HSI_alr_PCA_explanatory_power_scaled"), width = 800, height = 500, units = "px", pointsize = 12)
-
-fviz_screeplot(res.pca_scaled, addlabels = TRUE, ylim = c(0, 55))
-
-dev.off()
-```
-
-We can see that the PC1 axis has now lower percentage of the explained variances (45.3%), which brought more explained variance to the PC2 (11.5). In this way we get more explanatory power on PC2 which means for us that we can identify more than the one dominant process explaining the data variance (as it was in the first PCA of non-scaled data). Thus, we get more explanatory PCA when z-scoring the data which helps to our data interpretation.
-
-### PCA on scaled data
-
--   Positively correlated variables are grouped together.
-
--   Negatively correlated variables are positioned on opposite sides of the plot origin (opposed quadrants).
-
--   The distance between variables and the origin measures the quality of the variables on the factor map. Variables that are away from the origin are well represented on the factor map.
-
-```{r}
-png(filename = timestamp_filename("../figs", "PCA_XRF_HSI_alr_scaled"), width = 1000, height = 680, units = "px", pointsize = 14, res=120)
-
-autochtonous <- text_grob("Autochtonous", size=13, face="bold", color= "lightblue")
-allochtonous <- text_grob("Allochtonous", size=13, face="bold", color= "lightblue")
-Organic <- text_grob("Organic matter\nand redox", size=13, face="bold", color= "grey",rot = 90)
-Mineral <- text_grob("Minerals", size=13, face="bold", color= "grey", rot=90)
-
-fviz_pca_var(res.pca_scaled, col.var="contrib", axes = c(1,2), 
-             gradient.cols = c("darkred", "orange", "forestgreen"),
-             repel = TRUE)+
-   theme(plot.margin = unit(c(0.1,8,0.1,2), "lines")) +
-          annotation_custom(autochtonous,xmin=-.5,xmax=-0.5,ymin=-1,ymax=-1) + 
-          annotation_custom(allochtonous,xmin=0.5,xmax=0.5,ymin=-1,ymax=-1) +
-          annotation_custom(Organic,xmin=-1, xmax=-1,ymin=0.7,ymax=0.7) + 
-          annotation_custom(Mineral,xmin=-1,xmax=-1,ymin=-0.5,ymax=-0.5)+
-  coord_cartesian(clip = "off")
-
-dev.off()
-```
-
-### Correlation of the variables with the principle components - scaled
-
-```{r}
-corrplot(varS$cor, is.corr=FALSE)
-```
-
-### Plot the variables contribution to PCx
-
-#### Contributions of variables to PC1
-
-```{r}
-png(filename = timestamp_filename("../figs", "PC1_XRFHSI_contrib_scaled"), width = 680, height = 680, units = "px", pointsize = 14, res=120)
-
-fviz_contrib(res.pca_scaled, choice = "var", axes = 1, top = 12)
-
-dev.off()
-```
-
-#### Contributions of variables to PC2
-
-```{r}
-png(filename = timestamp_filename("../figs", "PC2_XRFHSI_contrib_scaled"), width = 680, height = 680, units = "px", pointsize = 14, res=120)
-fviz_contrib(res.pca_scaled, choice = "var", axes = 2, top = 10)
-dev.off()
-```
-
-#### Contributions of variables to PC3
-
-```{r}
-png(filename = timestamp_filename("../figs", "PC3_XRFHSI_contrib_scaled"), width = 680, height = 680, units = "px", pointsize = 14, res=120)
-
-fviz_contrib(res.pca_scaled, choice = "var", axes = 3, top = 10)
-
-dev.off()
-```
-
-## PCA on clr data with hierarchical unconstrained clusters
-
-For further data exploration and explanation we combine the results of clustering with the PCA bi-plots. In this way, we see what the important variables defining the specific lithotypes (the clusters).
-
-```{r}
-res.pca <- prcomp(data_PCA, scale =F)
-#res.pca <- PCA(df, scale = 0)
-#var <- get_pca_var(res.pca)
-#get_eig(res.pca)
-
-autochtonous <- text_grob("Autochtonous", size=13, face="bold", color= "lightblue")
-allochtonous <- text_grob("Allochtonous", size=13, face="bold", color= "lightblue") 
-Organic <- text_grob("Organic matter\nand redox", size=13, face="bold", color= "grey",rot = 90) 
-Mineral <- text_grob("Minerals", size=13, face="bold", color= "grey", rot=90) 
-
-
-b_clr <- fviz_pca_biplot(res.pca, label="var", axes = c(1,2), repel = TRUE, 
-                     title =" ", col.var = "black", xlab = "PC1 (55.3%)", ylab="PC2 (10.2%)",
-                     alpha.var = 1, alpha.ind = 0.5, habillage=data_cl$Hclust,
-               addEllipses=TRUE, ellipse.level=0.95, ellipse.alpha = 0.2) +
-  labs(color = "Clusters", shape ="Clusters", fill = "Clusters")+
-  annotation_custom(autochtonous,xmin=-3,xmax=-3,ymin=-4,ymax=-4) + 
-  annotation_custom(allochtonous,xmin=3,xmax=3,ymin=-4,ymax=-4) + 
-  annotation_custom(Organic,xmin=-5, xmax=-5,ymin=-2,ymax=-2) + 
-  annotation_custom(Mineral,xmin=-5,xmax=-5,ymin=3,ymax=3)+
-  theme(plot.margin = unit(c(0.1,8,0.1,2), "lines"))+
-  coord_cartesian(xlim = c(-5, 5), ylim = c(-4, 4), clip = "off")
-
-png(filename = timestamp_filename("../figs", "PCA_XRFHSI_unconst_clusters"), width = 680, height = 680, units = "px", pointsize = 14, res=120)
-
-b_clr + scale_color_viridis_d(option ="H") + 
-  scale_fill_viridis_d(option = "H")+
-     theme_minimal()
-
-dev.off()
-```
-
-## PCA on alr z-scored data with hierarchical unconstrained clusters
-
-```{r}
-res.pca <- prcomp(data_PCA, scale =T)
-
-autochtonous <- text_grob("Autochtonous", size=13, face="bold", color= "lightblue")
-allochtonous <- text_grob("Allochtonous", size=13, face="bold", color= "lightblue") 
-Organic <- text_grob("Organic matter\nand redox", size=13, face="bold", color= "grey",rot = 90) 
-Mineral <- text_grob("Minerals", size=13, face="bold", color= "grey", rot=90) 
-
-
-b_z <- fviz_pca_biplot(res.pca, label="var", axes = c(1,2), repel = TRUE, 
-                     title =" ", col.var = "black", xlab = "PC1 (45.3%)", ylab="PC2 (11.5%)",
-                     alpha.var = 1, alpha.ind = 0.5, habillage=data_cl$Hclust,
-               #cluster_CONISS, #K_means_cluster, Hcluster
-               addEllipses=TRUE, ellipse.level=0.95, ellipse.alpha = 0.2) +
-  labs(color = "Clusters", shape ="Clusters", fill = "Clusters")+
-  annotation_custom(autochtonous,xmin=-5,xmax=-5,ymin=-6,ymax=-6) + 
-  annotation_custom(allochtonous,xmin=5,xmax=5,ymin=-6,ymax=-6) + 
-  annotation_custom(Organic,xmin=-8, xmax=-8,ymin=-4,ymax=-4) + 
-  annotation_custom(Mineral,xmin=-8,xmax=-8,ymin=4,ymax=4)+
-  theme(plot.margin = unit(c(0.1,8,0.1,2), "lines"))+
-  coord_cartesian(xlim = c(-8, 8), ylim = c(-6, 6), clip = "off")
-
-png(filename = timestamp_filename("../figs", "PCA_XRFHSI_unconst_clusters_scaled"), width = 680, height = 680, units = "px", pointsize = 14, res=120)
-b_z + scale_color_viridis_d(option ="H") + 
-  scale_fill_viridis_d(option = "H")+
-     theme_minimal()
-
-dev.off()
-
-```
-
-Extracting the 4 PCs
-
-One the PCA axis are well explored and the phenomena responsible to the data variation are explained, the PCA axis can be used as the reduced dataset replacing the original variables when representing the given/selected phenomena. Thus, we extract the PC axis scores and save them along with our data for further plotting or data analysis.
-
-```{r}
-#summary(res.pca)
-res.pca <- prcomp(data_PCA, scale. =T, rank. = 4) #center = T,
-summary(res.pca)
-```
-
-Attaching the PC scores to the dataset
-
-```{r}
-# Extract principal component scores (first two components)
-pc_scores <- res.pca$x  # Selects columns 1 and 2 for the first two PCs
-
-# Extract loadings for all principal components
-pc_loadings <- res.pca$rotation
-
-df_PC <- bind_cols(data_cl, pc_scores)
-
-write.xlsx(df_PC, "../data/XRFHSI_clustered_PC.xlsx", rowNames = FALSE, col_type ="numeric")
-```
-
-## Trajectory plots
-
-The sedimentary data can be preceived as time-series data as the process of settlement is happening though time. Thus, while using the CONISS clustering, which groups the sediment data with respect to the depth/time variable, the PC axis can be used to plot the data and be able to track the chronological development of the variables represented by the PC scores. These plots are here called trajectory and they represent the evolution of the sediment composition though depth/time.
-
-```{r}
-depth_m <- as.data.frame(df_PC$`Composite depth (mm)`/1000)
-```
-
-```{r}
-#plot(df_PC$PC1, df_PC$PC2, type= "l", text = df_PC$comp_depth_mm)
-End <- df_PC %>% # last trading day
-  slice_max(df_PC$`Composite depth (mm)`)
- 
-Start <- df_PC %>% # first trading day
-  slice_min(df_PC$`Composite depth (mm)`)
-  #slice(which.min(depth_m))
-
-
-s <- ggplot(df_PC, aes(PC1, PC2)) + 
-  geom_point(aes(colour = factor(cluster_CONISS),  shape = factor(cluster_CONISS), alpha = 0.3))+
-  labs(alpha = "Trajectory")+
- #geom_line()
-  geom_path(alpha=0.3, col = "black", arrow = arrow(type = "closed", length = unit(0.25, "inches"), ends = "first")) +
-  labs(colour = "CONISS", shape = "CONISS")+
-    #+
- # geom_text(aes(label = round(depth_m, digits = 2)),check_overlap = T) +
-# geom_label_repel(
-#     data = df_PC %>% group_by(cluster_CONISS) %>% filter(PC1 == max(PC1)), 
-#     aes(PC1, PC2, fill = factor(cluster_CONISS), label = sprintf('%0.1f%%', PC1)),
-#     color = "black",
-#     fill = "white")
-# last trading day - round mark, annotation below
-  geom_point(data = Start, aes(x = PC1, y = PC2), col = "green", shape = 21, fill = "green", size = 2, stroke = 1.7) +
-  geom_text(data = Start, aes(x = PC1, y = PC2, label = sprintf("%0.0f", round(Start$`Composite depth (mm)`, digits = 0))), size = 4, vjust = 2.5) +
-  # first trading day - round mark, annotation above
-  geom_point(data = End, aes(x = PC1, y = PC2), col = "red", shape = 21, fill = "red", size = 2, stroke = 1.7) +
-  geom_text(data = End, aes(x = PC1, y = PC2, label = sprintf("%0.0f", round(End$`Composite depth (mm)`, digits = 0))), size = 4, face="bold", vjust = -1.5)
-
-s + scale_color_brewer(palette="Dark2", labels = c("Younger Dryas", "Allerød", "LS tephra", "Bølling-Allerød","Pleniglacial"))+
-  scale_shape_discrete(labels = c("Younger Dryas", "Allerød", "LS tephra", "Bølling-Allerød","Pleniglacial")) +#"Paired"
-     theme_minimal()+
-  annotation_custom(autochtonous,xmin=-4,xmax=-4,ymin=-6,ymax=-6) + 
-  annotation_custom(allochtonous,xmin=5,xmax=5,ymin=-6,ymax=-6) + 
-  annotation_custom(Organic,xmin=-7, xmax=-7,ymin=-3,ymax=-3) + 
-  annotation_custom(Mineral,xmin=-7,xmax=-7,ymin=5,ymax=5)+
- # theme(plot.margin = unit(c(0.1,8,0.1,2), "lines"))+
-  coord_cartesian(xlim = c(-8, 8), ylim = c(-6, 6), clip = "off")
-```
-
-From the trajectory plot we can see that the lake sediment sequence started with more allochtonous and minerogenic sediment in the Pleniglacial period (cluster 6) and evolved to the more organic rich and autochtonous type of sediment at the end of the sediment sequence which is corresponding to the end of Allerød and beginning of the Younger Dryas period.

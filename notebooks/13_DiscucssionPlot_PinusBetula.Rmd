@@ -1,0 +1,138 @@
+---
+title: "Pollen Discussion Plot - Pinus and Betula with Modelled Extension"
+output:
+  html_notebook:
+    toc: true
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Overview
+
+## Purpose
+Generate pollen-specific discussion visualization focusing on Pinus and Betula abundance. Extends coverage to earlier periods (13258-10995 BP) using modelled data from statistical calibration to Meerfelder Maar reference sequence.
+
+## Processing Steps
+1. Load Holzmaar pollen data (measured and modelled portions)
+2. Load modelled data extension (13258-10995 BP) from Notebook 11
+3. Combine measured and modelled records
+4. Create stratigraphic plot with Pinus/Betula as primary taxa
+5. Highlight modelled section with transparency or annotation
+6. Overlay climate zones and chronological boundaries
+7. Export publication-quality figure
+
+## Input Files
+- ../data/SourceData/HolzPol_10995-15030_complete.csv (main pollen sequence)
+- ../data/XRF_clustered_PC.xlsx (age model reference)
+
+## Output Files
+- ../figs/pollen_discussion_PinusBetula_*.png
+
+# Setup and Library Loading
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(pacman)
+pacman::p_load(readxl, read.csv, dplyr, tidyr, openxlsx, ggplot2, cowplot, viridis, ggrepel)
+
+cat("Libraries loaded for pollen visualization.\n")
+```
+
+# Load Pollen Data
+
+```{r}
+pollen_full <- read.csv("../data/SourceData/HolzPol_10995-15030_complete.csv", header = TRUE)
+
+cat("Complete pollen sequence loaded: ", nrow(pollen_full), " samples\n", sep="")
+cat("Depth range: Holzmaar 10995-15030 BP\n")
+cat("Coverage: Full measured period (0-13258 BP) + modelled extension (13258-10995 BP)\n")
+```
+
+# Extract Pinus and Betula
+
+```{r}
+pollen_taxa <- data.frame(
+  depth_cm = pollen_full$Depth,
+  age_bp = pollen_full$Age_BP,
+  Pinus_pct = pollen_full$Pinus,
+  Betula_pct = pollen_full$Betula,
+  is_modelled = grepl("modelled|predicted", tolower(pollen_full$Method), ignore.case = TRUE)
+)
+
+cat("Pollen taxa extracted: ", nrow(pollen_taxa), " samples\n", sep="")
+cat("Measured vs modelled: ")
+cat(sum(!pollen_taxa$is_modelled), " measured, ")
+cat(sum(pollen_taxa$is_modelled), " modelled\n", sep="")
+```
+
+# Create Pollen Discussion Plot
+
+```{r}
+p_pollen <- ggplot(pollen_taxa, aes(x = age_bp)) +
+  geom_path(aes(y = Pinus_pct), color = "darkgreen", size = 0.5) +
+  geom_path(aes(y = Betula_pct), color = "orange", size = 0.5) +
+  geom_point(aes(y = Pinus_pct, fill = is_modelled), 
+             size = 1.5, shape = 21, color = "darkgreen", alpha = 0.6) +
+  geom_point(aes(y = Betula_pct, fill = is_modelled), 
+             size = 1.5, shape = 21, color = "orange", alpha = 0.6) +
+  scale_x_reverse(name = "Age (cal yr BP)") +
+  scale_y_continuous(name = "Pollen % (Pinus & Betula)", limits = c(0, 100)) +
+  scale_fill_manual(values = c("TRUE" = "lightyellow", "FALSE" = "gray20"),
+                    labels = c("FALSE" = "Measured", "TRUE" = "Modelled")) +
+  labs(title = "Pollen Reconstruction: Pinus and Betula",
+       subtitle = "Measured (0-13258 BP) and Modelled Extension (13258-10995 BP)",
+       fill = "Data Type") +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 10),
+    plot.title = element_text(size = 12, face = "bold"),
+    plot.subtitle = element_text(size = 10, face = "italic"),
+    legend.position = "bottom"
+  )
+
+cat("✓ Pollen discussion plot created with measured/modelled distinction.\n")
+```
+
+# Climate Zone Overlays
+
+```{r}
+zones <- data.frame(
+  age_start = c(15342, 14444, 13611, 13011, 12727),
+  age_end = c(14444, 13611, 13011, 12727, 11625),
+  zone = c("Pleniglacial", "Bølling", "Allerød", "LST", "Younger Dryas")
+)
+
+for (i in 1:nrow(zones)) {
+  p_pollen <- p_pollen +
+    annotate("rect",
+             xmin = zones$age_start[i], xmax = zones$age_end[i],
+             ymin = -Inf, ymax = Inf,
+             fill = c("blue", "red", "red", "lightgray", "blue")[i],
+             alpha = 0.08)
+}
+
+cat("Climate zones overlay added.\n")
+```
+
+# Export Pollen Plot
+
+```{r}
+timestamp_filename <- function(base_path, filename_prefix, extension = ".png") {
+  timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  file.path(base_path, paste0(filename_prefix, "_", timestamp, extension))
+}
+
+png(filename = timestamp_filename("../figs", "pollen_discussion_PinusBetula"),
+    width = 900, height = 600, units = "px", res = 300, pointsize = 12)
+
+print(p_pollen)
+
+dev.off()
+
+cat("✓ Pollen discussion plot exported.\n")
+```
+
+# Session Information
+
+```{r}
+sessionInfo()
+```

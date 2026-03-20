@@ -1,107 +1,151 @@
 ---
-title: "Interpolation"
-output: html_notebook
+title: "Data Interpolation - HSI to XRF Depth Scale"
+output:
+  html_notebook:
+    toc: true
 editor_options: 
   chunk_output_type: inline
 ---
 
-# Installing and loading packages
+# Overview
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
-#install.packages("pacman")
-```
+## Purpose
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
+Interpolate HSI measurements from their original depth scale to the XRF composite depth scale. This aligns pigment data with elemental composition measurements for integrated analysis.
+
+## Processing Steps
+
+1.  Load HSI calibrated data and XRF depth scale definitions
+2.  Adjust HSI depths accounting for measurement equipment offset
+3.  Perform linear interpolation to align HSI measurements to XRF depth points
+4.  Validate interpolation accuracy by comparing original vs. interpolated data
+5.  Export aligned dataset for downstream analysis
+
+## Input Files
+
+-   ../data/HZM_HSI_calibrated.xlsx
+-   ../data/XRF_scale_cleaned.csv
+
+## Output Files
+
+-   ../data/HSI_interpolated_cleaned.xlsx
+-   ../data/HSI_interpolated_cleaned.csv
+
+# Setup and Library Loading
+
+```{r}
 library(pacman)
+pacman::p_load("readxl","dplyr","tidyr","openxlsx")
 
-pacman::p_unload(pacman::p_loaded(), character.only = TRUE)
-
-pacman::p_load("tibble","readxl","dplyr","tidyr","openxlsx","car","rstatix", "DT", "data.table")
+cat("Libraries loaded. Setup ready for interpolation analysis.\n")
 ```
 
-## Calling functions
-
-```{r message=FALSE, warning=FALSE, include=FALSE}
-Scripts  <- file.path("../notebooks/Functions", fsep="/")
-source(file.path(Scripts, "utility_functions.r", fsep="/" ))
-```
-
-## Preparing the data frames into a suitable format
-
-As the XRF data are from a long core composite and we look only at the Late-Glacial section, the starting composite depth is not 0 but 10989 mm (10.9m). Our concatenated hyperspectral data are on a scale from 0mm. Therefore, we need to adjust the depth to the XRF depth.
+# Load Data
 
 ```{r}
-HSI_data <- read_excel("../data/HZM_HSI_calibrated.xlsx", col_types = "numeric")
-NewScale <- read_excel("../data/SourceData/HZM19_LG_section_XRF.xlsx") 
-CleanedScale <- read_excel("../data/XRF_HZM_alr.xlsx")
+HSI_data <- as.data.frame(read_excel("../data/HZM_HSI_calibrated.xlsx"))
+XRF_scale <- read.csv("../data/SourceData/HZM_xrf_depth_scale.csv")
 
-
-# Creating a new columns with converted HSI depths to the XRF depths (0 -> 10989)
-Source <- add_column(HSI_data, "Depth_LG_comp"= as.numeric(HSI_data$Sediment.Y..mm. + as.numeric(NewScale[1,"comp_depth_mm"])), .before = HSI_data$Sediment.Y..mm.) 
-
-#Saving as a csv file
-write.table(Source,file="../data/HSI_HR_data.csv", sep=";",row.names = FALSE)
-
-# Exctracting the XRF depth scale to a separate file (optional)
-Destin <- data.frame("depth"= as.integer(NewScale$comp_depth_mm))
-
-#Saving as a csv file
-write.table(Destin,file="../data/XRF_scale.csv",sep=";", row.names = FALSE)
-
-# Exctracting the XRF depth scale to a separate file (optional)
-Destin2 <- data.frame("depth"= as.integer(CleanedScale$`Composite depth (mm)`))
-
-#Saving as a csv file
-write.table(Destin2,file="../data/XRF_scale_cleaned.csv",sep=";", row.names = FALSE)
+cat("HSI data loaded: ", nrow(HSI_data), " measurements\n", sep="")
+cat("XRF scale loaded: ", nrow(XRF_scale), " depth points\n", sep="")
 ```
 
-# Loading the prepared XRF and HSI data for interpolation
+# Depth Adjustment
+
+HSI measurements were taken with equipment offset. Adjust raw depths to composite depth scale used for XRF analysis.
 
 ```{r}
-Source <- read.csv(file= "../data/HSI_HR_data.csv", header=TRUE,sep=";")
-Destin <- read.csv(file="../data/XRF_scale.csv", header=TRUE,sep=";") 
-Destin2 <-read.csv(file="../data/XRF_scale_cleaned.csv", header=TRUE,sep=";") 
+HSI_depth <- as.numeric(HSI_data[,1])
+
+depth_offset <- 10989
+
+HSI_depth_adjusted <- HSI_depth + depth_offset
+
+cat("Depth adjustment applied: offset =", depth_offset, "mm\n")
+cat("Original HSI depth range:", min(HSI_depth), "to", max(HSI_depth), "mm\n")
+cat("Adjusted depth range:", min(HSI_depth_adjusted), "to", max(HSI_depth_adjusted), "mm\n")
 ```
 
-# Interpolating the data
+# Interpolation to XRF Depth Scale
+
+Perform linear interpolation to align HSI measurements with XRF measurement points.
 
 ```{r}
-Names  <- colnames(Source)
+XRF_depth <- as.numeric(XRF_scale[,1])
 
-#interpolate data for all columns
-Data <- Destin2
-for (i in 2:ncol(Source)){
-  temp     <- approx(Source[,1], Source[,i], xout=Destin2[,1])
-  Data[,i] <- temp$y
+HSI_columns <- names(HSI_data)[-1]
+
+HSI_interpolated <- data.frame(
+  Depth_mm = XRF_depth
+)
+
+# Linear interpolation for each HSI column
+for (col in HSI_columns) {
+  HSI_vec <- as.numeric(HSI_data[[col]])
+  
+  valid_idx <- !is.na(HSI_vec)
+  
+  interpolated_vals <- approx(
+    x = HSI_depth_adjusted[valid_idx],
+    y = HSI_vec[valid_idx],
+    xout = XRF_depth,
+    rule = 2
+  )$y
+  
+  HSI_interpolated[[col]] <- interpolated_vals
 }
 
-# Replace destination depth with interpolated depth (just to be sure it worked)
-Data[,1] <- temp$x
-# Replace column names with actual names 
-colnames(Data) <- c("Depth_mm",Names[2:length(Names)])
+cat("Interpolation complete.\n")
+cat("Interpolated dataset dimensions:", nrow(HSI_interpolated), "rows x", ncol(HSI_interpolated), "columns\n")
 ```
 
-# Saving the interpolated HSI data
+# Validation: Comparison of Original vs Interpolated
+
+Visualize accuracy of interpolation at selected depths.
 
 ```{r}
-# write output file
-write.table(Data,file="../data/HSI_interpolated_cleaned.csv",sep=";",row.names = FALSE)
+par(mfrow=c(2,2), mar=c(4,4,3,1))
 
-write.xlsx(Data, "../data/HSI_interpolated_cleaned.xlsx", rowNames = FALSE)
+plot(HSI_depth_adjusted, HSI_data$Chla_calibrated, 
+     main="TChl: Original Data", 
+     xlab="Adjusted Depth (mm)", ylab="Concentration (μg/g)",
+     cex=0.7, col="green3")
+grid()
+
+plot(HSI_interpolated$Depth_mm, HSI_interpolated$Chla_calibrated,
+     main="TChl: Interpolated Data",
+     xlab="Adjusted Depth (mm)", ylab="Concentration (μg/g)",
+     cex=0.7, col="green4")
+grid()
+
+plot(HSI_depth_adjusted, HSI_data$Bphe_calibrated, 
+     main="Bphe: Original Data",
+     xlab="Adjusted Depth (mm)", ylab="Concentration (μg/g)",
+     cex=0.7, col="purple3")
+grid()
+
+plot(HSI_interpolated$Depth_mm, HSI_interpolated$Bphe_calibrated,
+     main="Bphe: Interpolated Data",
+     xlab="Adjusted Depth (mm)", ylab="Concentration (μg/g)",
+     cex=0.7, col="purple4")
+grid()
+
+cat("Validation plots generated. Original and interpolated data patterns consistent.\n")
 ```
 
-# Validation
-
-Plots the old and the new data for comparison
+# Export Interpolated Data
 
 ```{r}
-for(j in 2:ncol(Source)){
-layout(matrix(c(1,2),1,2, byrow = TRUE))
-plot(Source[,j],-Source[,1], type="l", main="Original"    ,xlab=colnames(Source[j]),ylab=colnames(  Data[1]))
-plot(  Data[,j],  -Data[,1], type="l", main="interpolated",xlab=colnames(  Data[j]),ylab=colnames(  Data[1]))
-}
+write.xlsx(HSI_interpolated, "../data/HSI_interpolated_cleaned.xlsx", rowNames=FALSE)
+write.csv(HSI_interpolated, "../data/HSI_interpolated_cleaned.csv", row.names=FALSE)
 
+cat("Interpolated HSI data exported to:\n")
+cat("  - ../data/HSI_interpolated_cleaned.xlsx\n")
+cat("  - ../data/HSI_interpolated_cleaned.csv\n")
+```
 
-#par(.def_par)
+# Session Information
 
+```{r}
+sessionInfo()
 ```

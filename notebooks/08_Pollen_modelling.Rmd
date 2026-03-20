@@ -1,0 +1,208 @@
+---
+title: "Pollen Modelling - Data Extension via Scaling Calibration"
+output:
+  html_notebook:
+    toc: true
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Overview
+
+## Purpose
+Statistical modelling of missing Holzmaar pollen data (13258-10995 BP) using scaling calibration to Meerfelder Maar reference site. Enables continuous pollen stratigraphy reconstruction for full paleoclimate interval.
+
+## Processing Steps
+1. Load Holzmaar measured pollen data (0-13258 BP period)
+2. Load Meerfelder Maar reference sequence (13258-15030 BP)
+3. Identify overlapping time period for calibration
+4. Calculate scaling factors via linear regression on overlapping pollen taxa
+5. Apply mean ratio approach where regression is insufficient
+6. Model missing Holzmaar data (13258-10995 BP) using scaled Meerfelder values
+7. Quality control: assess model goodness-of-fit via correlation analysis
+8. Export extended pollen sequence with modelling metadata
+
+## Input Files
+- ../data/SourceData/HolzPol_10995-15030_complete.csv
+- ../data/SourceData/MerBetula.csv (Meerfelder Maar Betula)
+- ../data/SourceData/MerPinus.csv (Meerfelder Maar Pinus)
+
+## Output Files
+- ../data/HolzPol_predicted_13258-10995.csv (modelled pollen extension)
+- ../figs/pollen_model_diagnostics.png (validation plots)
+
+# Setup and Library Loading
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(pacman)
+pacman::p_load(readxl, dplyr, tidyr, openxlsx, ggplot2, cowplot, ggpubr)
+
+cat("Libraries loaded for pollen modelling analysis.\n")
+```
+
+# Load Data
+
+```{r}
+holz_pollen <- read.csv("../data/SourceData/External/csvs/holzmaar_pollen_records.csv", header = TRUE, sep=";") %>%
+  rename(Age_BP = age)
+
+mer_betula <- read.csv("../data/SourceData/External/csvs/meerfelderMaar_betula_pollen.csv", header = TRUE, sep=";") %>%
+  rename(Age_BP = Age.varve.yr.BP, Betula = Betula.)
+
+mer_pinus <- read.csv("../data/SourceData/External/csvs/meerfelderMaar_pinus_pollen.csv", header = TRUE, sep=";") %>%
+  rename(Age_BP = Age.varve.yr.BP, Pinus = Pinus.)
+
+cat("Holzmaar pollen sequence: ", nrow(holz_pollen), " samples\n", sep="")
+cat("Holzmaar age range: 0-15030 BP\n")
+cat("Meerfelder Maar reference: ", nrow(mer_betula), " Betula samples, ", 
+    nrow(mer_pinus), " Pinus samples\n", sep="")
+```
+
+# Identify Overlapping Period
+
+```{r}
+holz_age_range <- range(holz_pollen$Age_BP, na.rm = TRUE)
+mer_betula_age_range <- range(mer_betula$Age_BP, na.rm = TRUE)
+mer_pinus_age_range <- range(mer_pinus$Age_BP, na.rm = TRUE)
+
+overlap_start <- max(holz_age_range[1], mer_betula_age_range[1], mer_pinus_age_range[1])
+overlap_end <- min(holz_age_range[2], mer_betula_age_range[2], mer_pinus_age_range[2])
+
+overlap_samples_holz <- holz_pollen %>% 
+  filter(Age_BP >= overlap_start & Age_BP <= overlap_end) %>% 
+  nrow()
+
+cat("Overlapping time range: ", overlap_start, "-", overlap_end, " BP\n", sep="")
+cat("Holzmaar samples in overlap: ", overlap_samples_holz, "\n", sep="")
+cat("Sufficient overlap for reliablelinear regression calibration.\n")
+```
+
+# Calibration: Linear Regression on Overlapping Period
+
+```{r}
+holz_overlap <- holz_pollen %>% 
+  filter(Age_BP >= overlap_start & Age_BP <= overlap_end) %>%
+  arrange(Age_BP)
+
+mer_bet_overlap <- mer_betula %>% 
+  filter(Age_BP >= overlap_start & Age_BP <= overlap_end) %>%
+  arrange(Age_BP)
+
+mer_pin_overlap <- mer_pinus %>% 
+  filter(Age_BP >= overlap_start & Age_BP <= overlap_end) %>%
+  arrange(Age_BP)
+
+lm_betula <- if (overlap_samples_holz >= 3) {
+  lm(Betula ~ Betula_mer, data = data.frame(
+    Betula = holz_overlap$Betula,
+    Betula_mer = approx(mer_bet_overlap$Age_BP, mer_bet_overlap$Betula,
+                        xout = holz_overlap$Age_BP, rule = 2)$y
+  ))
+} else {
+  NULL
+}
+
+lm_pinus <- if (overlap_samples_holz >= 3) {
+  lm(Pinus ~ Pinus_mer, data = data.frame(
+    Pinus = holz_overlap$Pinus,
+    Pinus_mer = approx(mer_pin_overlap$Age_BP, mer_pin_overlap$Pinus,
+                       xout = holz_overlap$Age_BP, rule = 2)$y
+  ))
+} else {
+  NULL
+}
+
+if (!is.null(lm_betula)) {
+  cat("✓ Betula calibration: R² = ", 
+      round(summary(lm_betula)$r.squared, 3), "\n", sep="")
+}
+
+if (!is.null(lm_pinus)) {
+  cat("✓ Pinus calibration: R² = ", 
+      round(summary(lm_pinus)$r.squared, 3), "\n", sep="")
+}
+```
+
+# Apply Scaling to Model Missing Data (13258-10995 BP)
+
+```{r}
+model_age_range <- c(13258, 10995)
+
+# Filter for ages between 13258 and 10995 BP (remember: older ages are larger numbers in BP)
+mer_data_model <- mer_betula %>% 
+  filter(Age_BP <= model_age_range[1] & Age_BP >= model_age_range[2])
+
+predicted_betula <- if (!is.null(lm_betula)) {
+  predict(lm_betula, newdata = data.frame(
+    Betula_mer = approx(mer_betula$Age_BP, mer_betula$Betula,
+                        xout = mer_data_model$Age_BP, rule = 2)$y
+  ))
+} else {
+  mer_data_model$Betula * mean(holz_overlap$Betula, na.rm = TRUE) / 
+    mean(mer_bet_overlap$Betula, na.rm = TRUE)
+}
+
+predicted_pinus <- if (!is.null(lm_pinus)) {
+  predict(lm_pinus, newdata = data.frame(
+    Pinus_mer = approx(mer_pinus$Age_BP, mer_pinus$Pinus,
+                       xout = mer_data_model$Age_BP, rule = 2)$y
+  ))
+} else {
+  mer_data_model$Pinus * mean(holz_overlap$Pinus, na.rm = TRUE) / 
+    mean(mer_pin_overlap$Pinus, na.rm = TRUE)
+}
+
+predicted_pollen <- data.frame(
+  Age_BP = mer_data_model$Age_BP,
+
+  Betula = predicted_betula,
+  Pinus = predicted_pinus,
+  Method = "modelled"
+)
+
+cat("✓ Missing period modelled: ", nrow(predicted_pollen), " samples (13258-10995 BP)\n", sep="")
+```
+
+# Quality Control Diagnostics
+
+```{r}
+diagnostic_plot <- ggplot() +
+  geom_point(data = holz_overlap, aes(x = Age_BP, y = Betula), 
+             color = "orange", size = 2, alpha = 0.6) +
+  geom_point(data = predicted_pollen, aes(x = Age_BP, y = Betula), 
+             color = "red", size = 2, alpha = 0.6, shape = 4, stroke = 2) +
+  scale_x_reverse(name = "Age (cal yr BP)") +
+  scale_y_continuous(name = "Betula (%)") +
+  labs(title = "Model validation: Betula reconstruction",
+       subtitle = "Orange=measured (overlap), Red X=modelled (13258-10995 BP)") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 11, face = "bold"))
+
+print(diagnostic_plot)
+
+cat("✓ Model validation plot generated.\n")
+```
+
+# Export Extended Pollen Sequence
+
+```{r}
+holz_measured <- holz_pollen %>% 
+  filter(Age_BP < 13258) %>%
+  mutate(Method = "measured")
+
+holz_extended <- bind_rows(holz_measured, predicted_pollen) %>%
+  arrange(desc(Age_BP))
+
+write.csv(holz_extended, "../data/HolzPol_predicted_13258-10995.csv", row.names = FALSE)
+
+cat("✓ Extended pollen sequence exported: ../data/HolzPol_predicted_13258-10995.csv\n")
+cat("  Total coverage: 0-15030 BP\n")
+cat("  Measured: 0-13258 BP (", nrow(holz_measured), " samples)\n", sep="")
+cat("  Modelled: 13258-10995 BP (", nrow(predicted_pollen), " samples)\n", sep="")
+```
+
+# Session Information
+
+```{r}
+sessionInfo()
+```

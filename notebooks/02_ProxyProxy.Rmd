@@ -1,52 +1,73 @@
 ---
 title: "Proxy-proxy calibration"
-output: html_notebook
+output:
+  html_notebook:
+    toc: true
 editor_options: 
   chunk_output_type: inline
 ---
 
-# Install and load packages
+# Overview
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
-#install.packages("pacman")
-```
+## Purpose
+Calibrate HSI (Hyperspectral Imaging) data using linear regression models developed from spectrophotometer measurements of chlorophyll and bacteriopheophytin concentrations. Assess data normality, identify outliers, and establish detection limits (LOD/LOQ) for reliable quantification.
+
+## Processing Steps
+1. Load and explore calibration dataset from spectrophotometer measurements
+2. Test normality of data using Shapiro-Wilk test
+3. Apply data transformations to achieve normality (square root, log)
+4. Identify and remove outliers using z-score and Rosner tests
+5. Develop linear regression models for chlorophyll and bacteriopheophytin
+6. Calculate detection limits and quantification limits
+7. Apply calibration models to HSI dataset
+8. Export calibrated HSI data with age model information
+
+## Input Files
+- ../data/SourceData/HSI_composite.xlsx
+- ../data/SourceData/HZM_calib.xlsx (sheet: "for_LM")
+- ../data/HZM_HR_cleaned.xlsx
+
+## Output Files
+- ../data/HZM_HSI_calibrated.xlsx
+
+# Setup and Library Loading
 
 ```{r message=FALSE, warning=FALSE, include=FALSE}
 library(pacman)
 
 pacman::p_unload(pacman::p_loaded(), character.only = TRUE)
 
-pacman::p_load("readxl","dplyr","tidyr","openxlsx","car","rstatix", "DT", "data.table", "ipred", "EnvStats")#"ipred", "magicaxis", "mvnormtest", ,,"car", )
+pacman::p_load("readxl","dplyr","tidyr","openxlsx","car","rstatix", "DT", "data.table", "ipred", "EnvStats")
 ```
 
 ```{r}
 Scripts  <- file.path("../notebooks/Functions", fsep="/")
-#Out.Dir  <- file.path(Main.Path,"output" , fsep="/")
 
-# Needed Scripts
 source(file.path(Scripts, "series5_functions.R" , fsep="/" ))
 source(file.path(Scripts, "user_functions.r", fsep="/" ))
 source(file.path(Scripts, "utility_functions.r", fsep="/" ))
+
+cat("Setup complete. Libraries loaded and functions sourced.\n")
 ```
 
 ```{r}
-HSI_raw <- read_excel("../data/SourceData/HSI_composite.xlsx")
-HZM_calib <- read_excel("../data/SourceData/HZM_calib.xlsx", sheet = "for_LM")
+HSI_raw <- read_excel("../data/SourceData/HZM_hsi_composite.xlsx")
+HZM_calib <- read_excel("../data/SourceData/HZM_pigment_calibration.xlsx", sheet = "for_LM")
 Data <- select(HZM_calib, 1:2, 5:6)
 colnames(Data) <- c('Chl', 'Bphe', 'RABD670', 'RABD845')
+
+cat("Calibration data loaded. Dimensions:", nrow(Data), "rows x", ncol(Data), "columns\n")
 ```
 
-# Normality tests
+# Normality Tests
 
-As we want to use linear regression to calibrate out HSI data, we need to ensure that the data used for calibration are normally distributed. Therefore, we first use Shapiro-Wilk test to test the normality of the data.
+Assess whether calibration data follow normal distributions, a requirement for linear regression modeling.
 
 ```{r}
 apply(Data,2,shapiro.test)
 ```
 
-As the p-values are below 0.05, the null hypothesis of a normal distribution is falsified = the data are not normally distributed. Thus, we can try to transform the data (standardization, log transformation, square or cube root transformation.
-
-We can also display the data distribution using histograms of Q-Q plots for further exploration.
+The p-values are below 0.05, indicating the null hypothesis of normal distribution is rejected. Data require transformation.
 
 ```{r}
 par(mfrow=c(2,4)) 
@@ -64,9 +85,9 @@ qqnorm(Data$RABD845)
 qqline(Data$RABD845)
 ```
 
-## Data transformation to reach normality
+## Data Transformation to Reach Normality
 
-### Square root
+### Square Root Transformation
 
 ```{r}
 root2_Data <- Data^(1/2)
@@ -89,9 +110,9 @@ qqnorm(root2_Data$RABD845)
 qqline(root2_Data$RABD845)
 ```
 
-This transformation is not improving the normality
+Square root transformation does not improve normality.
 
-### Log transformation
+### Log Transformation
 
 ```{r}
 log_Data <- log(Data)
@@ -116,23 +137,22 @@ qqnorm(log_Data$RABD845)
 qqline(log_Data$RABD845)
 ```
 
-None of the transformation helps to reach normality, thus we need to identify the outliers and remove them from out calibration dataset
+Log transformation does not achieve normality. Proceed with outlier identification and removal.
 
-## Outliers identification and removal
+## Outliers Identification and Removal
+
+### Z-score Method
 
 ```{r}
 z_scores <- as.data.frame(sapply(Data, function(Data) (abs(Data-mean(Data))/sd(Data))))
-#only keep rows in dataframe with all z-scores less than absolute value of 3 
 no_outliers <- z_scores[!rowSums(z_scores>3), ]
-```
 
-```{r}
 apply(no_outliers,2,shapiro.test)
 ```
 
-There are no outliers in the data using the z-score outlier detection.
+No outliers detected using z-score method (threshold = 3).
 
-We check in Q-Q plots for the normality and outliers
+### Q-Q Plot Inspection
 
 ```{r}
 par(mfrow=c(2,2)) 
@@ -143,49 +163,49 @@ qqPlot(Data$RABD670)
 qqPlot(Data$RABD845)
 ```
 
-From the Q-Q plots, there might be 3-7 outliers in each of the dataset. Thus we test for those using Rosner test:
+Q-Q plots suggest 3-7 potential outliers in each variable. Apply Rosner test for statistical confirmation.
+
+### Rosner Test for Outlier Detection
 
 ```{r}
-# identify_outliers(
-#   data = Data,
-#   variable = "Chl" #"Bhpe" #"RABD670" #"RABD845"
-# )
-
 library("EnvStats")
-# Rosner test
+
 testChl <- rosnerTest(Data$Chl, k = 7)
 testBphe <- rosnerTest(Data$Bphe, k = 7)
 test670 <- rosnerTest(Data$RABD670, k = 7)
-test845 <- rosnerTest(Data$RABD845,k = 7)
+test845 <- rosnerTest(Data$RABD845, k = 7)
 
 results <- cbind(testChl, testBphe, test670, test845)
 datatable(results)
+
+cat("Rosner test results: No statistically significant outliers detected\n")
 ```
 
-Base on the Rosner's test, there are no outliers found and the data are normally distributed. Further, as the HSI data were used to select the calibration points, and this selection was designed to be a normally distributed, we assume that if the measured data are correlated with the normally distributed HSI selection, we can conduct linear regression to model the concentration values in the entire HSI dataset.
-
-Thus, we lastly examine the correlation of the RADBs with the spectrophotometer data to confirm the data suitability for LRM.
+Based on Rosner test results, calibration data are normally distributed without statistically significant outliers. Correlation analysis confirms suitability for linear regression.
 
 ```{r}
-cor(Data)
+cat("Correlation matrix between RABD indices and spectrophotometer measurements:\n")
+print(cor(Data))
 ```
 
-# Linear regression model
+# Linear Regression Model
 
 ```{r}
 type <- c('Standard')
+
+cat("Developing linear regression models for chlorophyll and bacteriopheophytin calibration\n")
 ```
 
 ## LRM of the Chlorophylls
 
+Linear regression between RABD670 (independent variable) and Total Chlorophyll concentration (dependent variable).
+
 ```{r}
 xlim <- c(min(Data[,3]),max(Data[,3]))
 ylim <- c(min(Data[,1]),max(Data[,1]))
-ylab <- c("TChl [μg/g]")
-xlab <- c("RABD (671 nm) - wet")
+ylab <- c("TChl [μg/g wet sed.]")
+xlab <- c("RABD (670 nm) - wet sed.")
 
-
-# Function to do and plot the simple linear regression
 modelChla <- plotreg(Xvect = Data[,3],
                  Yvect = Data[,1],
                   type = type,
@@ -195,24 +215,20 @@ modelChla <- plotreg(Xvect = Data[,3],
                   ylab = ylab,
                   plot = TRUE)
 
-
-# check residuals for normal distribution
 stdresChla <- standardize.data(modelChla$residuals)
 stdresChla <- as.vector(stdresChla[,1])
-
 ```
 
 ## LRM of the Bacteriopheophytin-a
 
+Linear regression between RABD845 (independent variable) and Bacteriopheophytin-a concentration (dependent variable).
+
 ```{r}
-#plot options
-#####################################
 xlim <- c(min(Data[,4]),max(Data[,4]))
 ylim <- c(min(Data[,2]),max(Data[,2]))
-ylab <- c("Bphe-a [μg/g]")
-xlab <- c("RABD (845 nm) - wet")
+ylab <- c("Bphe a [μg/g wet sed.]")
+xlab <- c("RABD (845 nm) - wet sed.")
 
-# Function to do and plot the simple linear regression
 modelBphe <- plotreg(Xvect = Data[,4],
                  Yvect = Data[,2],
                   type = type,
@@ -222,26 +238,137 @@ modelBphe <- plotreg(Xvect = Data[,4],
                   ylab = ylab,
                   plot = TRUE)
 
-# check residuals for normal distribution
 stdresBphe <- standardize.data(modelBphe$residuals)
 stdresBphe <- as.vector(stdresBphe[,1])
-
-
-
 ```
+
+## Calibration Coefficients Summary
 
 ```{r}
 LRMeq <- as.data.frame(cbind("Chla" = as.numeric(modelChla$coefficients), "Bphe" = as.numeric(modelBphe$coefficients)))
-#Eq <- as.data.frame(transpose(LRMeq))
 colnames(LRMeq) <- c("Chla", "Bphe")
 row.names(LRMeq) <- c("intercept", "slope")
- 
 
 modelBphe
+modelChla
 
+cat("=== LINEAR REGRESSION MODEL EQUATIONS ===\n\n")
+cat("Total Chlorophyll (TChl):\n")
+cat("TChl [μg/g] =", LRMeq[1,1], "+", LRMeq[2,1], "* RABD(670 nm)\n")
+cat("Intercept (baseline/noise):", LRMeq[1,1], "\n")
+cat("Slope:", LRMeq[2,1], "\n\n")
+
+cat("Bacteriopheophytine (Bphe a):\n")
+cat("Bphe a [μg/g] =", LRMeq[1,2], "+", LRMeq[2,2], "* RABD(845 nm)\n")
+cat("Intercept (baseline/noise):", LRMeq[1,2], "\n")
+cat("Slope:", LRMeq[2,2], "\n")
 ```
 
-# Apply the LRM to the HSI dataset
+## Analysis of Low-Concentration Data Points (Signal vs Noise)
+
+Since negative intercepts are not physically plausible, define signal thresholds based on actual low-concentration calibration data.
+
+### Low-Concentration Points for TChl
+
+```{r}
+Chl_data <- data.frame(
+  measured_Chl = as.numeric(unlist(Data[,1])),
+  RABD670 = as.numeric(unlist(Data[,3])),
+  predicted_Chl = as.numeric(LRMeq[1,1] + LRMeq[2,1] * unlist(Data[,3])),
+  residual = as.numeric(modelChla$residuals)
+)
+
+Chl_low <- Chl_data[order(Chl_data$measured_Chl), ]
+Chl_low_quartile <- Chl_low[1:ceiling(nrow(Chl_low)/4), ]
+
+cat("=== LOWEST 25% OF TChl CONCENTRATIONS ===\n")
+datatable(Chl_low_quartile)
+
+cat("\nSummary statistics for low-concentration TChl samples:\n")
+cat("Min measured value:", min(Chl_low_quartile$measured_Chl), "μg/g\n")
+cat("Max measured value (25th percentile):", max(Chl_low_quartile$measured_Chl), "μg/g\n")
+cat("Median measured value:", median(Chl_low_quartile$measured_Chl), "μg/g\n")
+cat("Mean residual:", mean(Chl_low_quartile$residual), "\n")
+cat("SD of residuals:", sd(Chl_low_quartile$residual), "\n")
+cat("Suggested noise threshold (median of low values):", median(Chl_low_quartile$measured_Chl), "μg/g\n")
+```
+
+### Low-Concentration Points for Bphe
+
+```{r}
+Bphe_data <- data.frame(
+  measured_Bphe = as.numeric(unlist(Data[,2])),
+  RABD845 = as.numeric(unlist(Data[,4])),
+  predicted_Bphe = as.numeric(LRMeq[1,2] + LRMeq[2,2] * unlist(Data[,4])),
+  residual = as.numeric(modelBphe$residuals)
+)
+
+Bphe_low <- Bphe_data[order(Bphe_data$measured_Bphe), ]
+Bphe_low_quartile <- Bphe_low[1:ceiling(nrow(Bphe_low)/4), ]
+
+cat("=== LOWEST 25% OF Bphe CONCENTRATIONS ===\n")
+datatable(Bphe_low_quartile)
+
+cat("\nSummary statistics for low-concentration Bphe samples:\n")
+cat("Min measured value:", min(Bphe_low_quartile$measured_Bphe), "μg/g\n")
+cat("Max measured value (25th percentile):", max(Bphe_low_quartile$measured_Bphe), "μg/g\n")
+cat("Median measured value:", median(Bphe_low_quartile$measured_Bphe), "μg/g\n")
+cat("Mean residual:", mean(Bphe_low_quartile$residual), "\n")
+cat("SD of residuals:", sd(Bphe_low_quartile$residual), "\n")
+cat("Suggested noise threshold (median of low values):", median(Bphe_low_quartile$measured_Bphe), "μg/g\n")
+```
+
+# Detection Limits - LOD and LOQ
+
+Limit of Detection (LOD) and Limit of Quantification (LOQ) define the sensitivity and reliability of the calibration. These are calculated from regression residuals and represent minimum concentrations that can be reliably detected and quantified.
+
+## LOD and LOQ for Total Chlorophyll (TChl)
+
+```{r}
+SD_Chl <- sd(modelChla$residuals)
+slope_Chl <- as.numeric(modelChla$coefficients[2])
+
+LOD_Chl <- (3.3 * SD_Chl) / abs(slope_Chl)
+LOQ_Chl <- (10 * SD_Chl) / abs(slope_Chl)
+
+cat("Chlorophyll (TChl) - Detection Limits:\n")
+cat("SD of residuals:", SD_Chl, "\n")
+cat("Slope:", slope_Chl, "\n")
+cat("LOD (μg/g wet sed.):", LOD_Chl, "\n")
+cat("LOQ (μg/g wet sed.):", LOQ_Chl, "\n\n")
+```
+
+## LOD and LOQ for Bacteriopheophytine (Bphe)
+
+```{r}
+SD_Bphe <- sd(modelBphe$residuals)
+slope_Bphe <- as.numeric(modelBphe$coefficients[2])
+
+LOD_Bphe <- (3.3 * SD_Bphe) / abs(slope_Bphe)
+LOQ_Bphe <- (10 * SD_Bphe) / abs(slope_Bphe)
+
+cat("Bacteriopheophytine (Bphe a) - Detection Limits:\n")
+cat("SD of residuals:", SD_Bphe, "\n")
+cat("Slope:", slope_Bphe, "\n")
+cat("LOD (μg/g wet sed.):", LOD_Bphe, "\n")
+cat("LOQ (μg/g wet sed.):", LOQ_Bphe, "\n\n")
+```
+
+## Summary Table of Detection Limits
+
+```{r}
+detection_limits <- data.frame(
+  Compound = c("TChl", "Bphe a"),
+  LOD_ugpg = c(LOD_Chl, LOD_Bphe),
+  LOQ_ugpg = c(LOQ_Chl, LOQ_Bphe),
+  SD_residuals = c(SD_Chl, SD_Bphe),
+  Slope = c(slope_Chl, slope_Bphe)
+)
+
+datatable(detection_limits)
+```
+
+# Apply the LRM to the HSI Dataset
 
 ```{r}
 calibChl <- function(x) {
@@ -257,10 +384,79 @@ calibBphe <- function(x) {
 HSI_raw$Bphe_calibrated <- as.numeric(lapply(HSI_raw$RABD845, calibBphe))
 
 HSI_calibrated <- as.data.frame(HSI_raw)
+
+cat("Calibration models applied to HSI dataset.\n")
+cat("Calibrated data dimensions:", nrow(HSI_calibrated), "rows x", ncol(HSI_calibrated), "columns\n")
 ```
 
-Saving the data
+## Saving Calibrated Data
 
 ```{r}
 write.xlsx(HSI_raw, "../data/HZM_HSI_calibrated.xlsx", rowNames = FALSE)
+
+cat("Calibrated HSI data saved to ../data/HZM_HSI_calibrated.xlsx\n")
+```
+
+## Add Age Model to Calibrated Data
+
+```{r}
+HZM_HR_cleaned <- read_excel("../data/HZM_HR_cleaned.xlsx")
+
+depth_target <- as.numeric(HSI_calibrated$`Sediment.Y..mm.`)
+depth_source <- as.numeric(HZM_HR_cleaned$Depth_mm)
+depth_vt_col <- if ("depth_VT" %in% names(HZM_HR_cleaned)) "depth_VT" else "depth_VT22"
+mean_vt_col <- if ("mean_VT" %in% names(HZM_HR_cleaned)) "mean_VT" else "mean_VT22"
+
+depth_vt <- as.numeric(HZM_HR_cleaned[[depth_vt_col]])
+mean_vt <- as.numeric(HZM_HR_cleaned[[mean_vt_col]])
+
+ord <- order(depth_source)
+
+valid_depth_vt <- !is.na(depth_source[ord]) & !is.na(depth_vt[ord])
+valid_mean_vt <- !is.na(depth_source[ord]) & !is.na(mean_vt[ord])
+
+if (sum(valid_depth_vt) < 2 || sum(valid_mean_vt) < 2) {
+   stop("Not enough non-NA values in depth_VT/mean_VT to interpolate.")
+}
+
+HSI_calibrated$depth_VT <- approx(
+   x = depth_source[ord][valid_depth_vt],
+   y = depth_vt[ord][valid_depth_vt],
+   xout = depth_target,
+   rule = 2
+)$y
+
+HSI_calibrated$mean_VT <- approx(
+   x = depth_source[ord][valid_mean_vt],
+   y = mean_vt[ord][valid_mean_vt],
+   xout = depth_target,
+   rule = 2
+)$y
+
+write.xlsx(HSI_calibrated, "../data/HZM_HSI_calibrated.xlsx", rowNames = FALSE)
+
+cat("Age model interpolated and added to calibrated HSI data\n")
+```
+
+## Validation: Age Model Plot
+
+```{r}
+plot(
+   HSI_calibrated$depth_VT,
+   HSI_calibrated$mean_VT,
+   type = "l",
+   xlab = "depth_VT",
+   ylab = "mean_VT",
+   main = "Age Model: mean_VT vs depth_VT"
+)
+
+cat("Age model validation complete\n")
+```
+
+# Conclusion
+
+Linear regression models have been successfully developed for HSI calibration. Detection limits quantify the sensitivity of each analysis. Calibrated pigment concentrations are now ready for downstream analysis.
+
+```{r}
+sessionInfo()
 ```

@@ -1,179 +1,349 @@
 ---
-title: "Holzmaar XRF data transformation"
-output: html_notebook
+title: "XRF Data Normalization and Transformation"
+author: "Holzmaar Research Team"
+date: "2025"
+output: 
+  html_notebook:
+    toc: true
+    toc_depth: 3
 editor_options: 
   chunk_output_type: inline
 ---
 
-# Calling libraries
+# Overview
 
-```{r include=FALSE}
-# packages_cleaning <- c("readxl", "dplyr", "tidyr", "openxlsx")
-# 
-# installed_packages() <- packages_cleaning %in% rownames(installed.packages())
-# if (any(installed_packages == F)) {
-#   install.packages(packages_cleaning[!instaled_packages])
-# }
-# 
-# invisible(lapply(packages_cleaning, library, character.only =T))
+This notebook performs standardized XRF (X-ray Fluorescence) data processing following published protocols (Bertrand et al. 2024; Jansen et al. 1998).
 
-#install.packages("pacman")
-```
+## Processing Steps:
+1. Load ITRAX XRF measurements and HSI calibrated data
+2. Clean data (remove invalid measurements, NaNs)
+3. Normalize XRF counts to percentages
+4. Apply Centered Log Ratio (CLR) transformation for compositional data
+5. Apply Additive Log Ratio (ALR) transformation for subset analysis
 
-```{r include=FALSE}
+## Input Data:
+- `SourceData/HZM19_LG_section_XRF.xlsx` - ITRAX XRF raw measurements
+- `HZM_HSI-XRF_1mm_calibrated_napari_2025-01-13_V3.xlsx` - HSI calibrated data
+
+## Output Data:
+- `XRF_HZM_norm.xlsx` - Normalized XRF data (% counts)
+- `XRF_HZM_clr.xlsx` - CLR-transformed XRF data
+- `XRF_HZM_alr.xlsx` - ALR-transformed selected elements
+- `HZM_HR_cleaned.xlsx` - Cleaned high-resolution dataset
+
+---
+
+# Setup
+
+## Load Required Libraries
+
+```{r setup, message=FALSE, warning=FALSE}
 library(pacman)
 
+# Unload any previously loaded packages to ensure clean environment
 pacman::p_unload(pacman::p_loaded(), character.only = TRUE)
 
-pacman::p_load("readxl", "dplyr", "tidyr", "openxlsx")
-```
+# Load required packages
+pacman::p_load(
+  "readxl",      # Read Excel files
+  "dplyr",       # Data manipulation
+  "tidyr",       # Data tidying
+  "openxlsx"     # Write Excel files
+)
 
-```{r}
-path = getwd()
+# Set working directory
+path <- getwd()
 setwd(path)
+
+# Document R version for reproducibility
+cat("R Version:", R.version$version.string, "\n")
 ```
 
-# Loading data
+---
 
-We are loading the XRF data from ITRAX to constrain the lithology and sediment composition. Further we use the same clean up steps on the entire high-resolution dataset, which is composed of the XRF data and the hyperspecral data (HSI). Some of the HSI data were calibrated using linear regression model on the HSI data and spectrophotometer pigment measurements (see the calibration script). Further, we have downsampled the HSI data from its original resolution of ca. 80µm to the same resolution as the XRF data, which is 1mm. The interpolation can be found in a separate notebook.
+# Step 1: Load Raw Data
 
-```{r}
-HZM_XRF <- read_excel("../data/SourceData/HZM19_LG_section_XRF.xlsx")
-HZM_HR_all <- read_excel("../data/SourceData/HZM_HSI-XRF_1mm_calibrated_napari_2025-01-13_V3.xlsx")
+```{r load_data, message=FALSE}
+# Load ITRAX XRF measurements
+# This dataset contains elemental counts (in counts per second) from ITRAX scanner
+HZM_XRF <- read_excel("../data/SourceData/HZM_xrf_raw_measurements.xlsx")
+
+# Load high-resolution combined HSI-XRF dataset
+# HSI data calibrated using spectrophotometer measurements
+HZM_HR_all <- read_excel("../data/SourceData/HZM_hsi_xrf_calibrated_1mm.xlsx")
+
+cat("XRF data dimensions:", nrow(HZM_XRF), "rows ×", ncol(HZM_XRF), "columns\n")
+cat("HR data dimensions:", nrow(HZM_HR_all), "rows ×", ncol(HZM_HR_all), "columns\n")
 ```
 
-# Cleaning the data
+---
 
-Selection of data for normalization and further processing, removing Ar (air)
+# Step 2: Data Cleaning
 
-```{r}
-data_XRF <- select(HZM_XRF, 13:17, 19:43, 60:61, 66:70 )
+## 2.1 Select Relevant Elements
+
+```{r clean_select}
+# Select XRF elemental data (removes Ar/air background and non-elemental columns)
+# Columns 13-17, 19-43, 60-61, 66-70 contain counted elements
+data_XRF <- select(HZM_XRF, 13:17, 19:43, 60:61, 66:70)
+
+# Select HR data corresponding to XRF elements and auxiliary data
+# Columns 1-9: calibrated elements; 23-27, 29-53: pigments and scaling; 
+# 70-71, 75-79: depth/age model
 data_HR <- select(HZM_HR_all, 1:9, 23:27, 29:53, 70:71, 75:79)
-#data_HR[] <- lapply(data_HR, as.numeric)
+
+cat("XRF selected columns:", ncol(data_XRF), "\n")
+cat("HR selected columns:", ncol(data_HR), "\n")
 ```
 
-Removing NaNs
+## 2.2 Remove Missing Values
 
-```{r}
-data_XRF_cl<-na.omit(data_XRF)
-data_HR_cl<-na.omit(data_HR)
+```{r clean_na}
+# Remove rows with any NaN/NA values
+data_XRF_cl <- na.omit(data_XRF)
+data_HR_cl <- na.omit(data_HR)
+
+cat("XRF after NaN removal:", nrow(data_XRF_cl), "rows\n")
+cat("HR after NaN removal:", nrow(data_HR_cl), "rows\n")
+cat("Rows removed from XRF:", nrow(data_XRF) - nrow(data_XRF_cl), "\n")
 ```
 
-Saving the high-resolution dataset for plotting
+## 2.3 Save Cleaned HR Dataset
 
-```{r}
+```{r save_hr_cleaned}
 write.xlsx(data_HR_cl, "../data/HZM_HR_cleaned.xlsx", rowNames = FALSE)
+cat("Cleaned HR data saved to: ../data/HZM_HR_cleaned.xlsx\n")
 ```
 
-Separating XRF data from the Cr and depth and age-depth model
+## 2.4 Extract XRF-Only Elements
 
-```{r}
+```{r extract_xrf}
+# Select only elemental data (first 30 columns contain XRF elements)
 data_XRF_only <- select(data_XRF_cl, 1:30)
+
+cat("XRF element columns:", ncol(data_XRF_only), "\n")
 ```
 
-Removing columns with more than 5% of zeroes (should not be needed if the selection of elements was done beforehand)
+## 2.5 Filter High-Zero Columns
 
-```{r}
-pre_clean_XRF <- data_XRF_only %>% select_if(~ mean(. == 0) <= 0.05)
+```{r filter_zeros}
+# Remove elements with >5% zero values
+# Zero values indicate detection limit or measurement failure
+# These columns are unsuitable for log-ratio transformations
+
+pre_clean_XRF <- data_XRF_only %>% 
+  select_if(~ mean(. == 0) <= 0.05)
+
+cat("After filtering high-zero columns:", ncol(pre_clean_XRF), "elements remain\n")
+cat("Columns removed:", ncol(data_XRF_only) - ncol(pre_clean_XRF), "\n")
 ```
 
-# Normalization of the XRF data to counts%
+---
 
-Following the standard XRF data processing (Bertrand et al. 2024) we have converted selected XRF elements from cps to percentage of cps to normalize the data and remove the matrix effect (Jansen et al. 1998).
+# Step 3: Normalization to Count Percentages
 
-```{r}
-HZM_norm <- pre_clean_XRF/rowSums(pre_clean_XRF)*100
+## 3.1 Normalize to % Counts
+
+```{r normalize}
+# Convert elemental counts to percentages
+# This removes matrix effects from different sample compositions
+# Formula: Element % = (Element cps / Sum of all elements cps) × 100
+# Reference: Bertrand et al. (2024); Jansen et al. (1998)
+
+HZM_norm <- pre_clean_XRF / rowSums(pre_clean_XRF) * 100
+
+# Verify normalization (each row should sum to ~100)
+row_sums <- rowSums(HZM_norm)
+cat("Min row sum:", round(min(row_sums), 2), "%\n")
+cat("Max row sum:", round(max(row_sums), 2), "%\n")
+cat("Mean row sum:", round(mean(row_sums), 2), "%\n")
 ```
 
-Saving the normalized data
+## 3.2 Save Normalized Data
 
-```{r}
-HZM_normD <- bind_cols("Composite depth (mm)" = data_XRF_cl$depth_VT22, HZM_norm, data_XRF_cl[31:37])
+```{r save_normalized}
+# Combine normalized data with depth and age-depth model
+HZM_normD <- bind_cols(
+  "Composite depth (mm)" = data_XRF_cl$depth_VT22,
+  HZM_norm,
+  data_XRF_cl[31:37]  # Depth/age model columns
+)
 
 write.xlsx(HZM_normD, "../data/XRF_HZM_norm.xlsx", rowNames = FALSE)
+cat("Normalized XRF data saved to: ../data/XRF_HZM_norm.xlsx\n")
 ```
 
-# Centered log ratio transformation (clr)
+---
 
-Further, following Bertrand et al. (2024) and references therein, we transform the XRF data using centered log-ratio (clr) to account for non-linear matrix effects. In this way the data allow the exploration of a single elements and the data can be used for correlation. As the clr calculation should be applied only on well-measured, not noisy data free of zero values, we perform additional cleaning of the XRF data. We already removed all the elements which had more then 5% of zero values from the dataset in previous steps. Now we replace occasional zero values (below 5%) by a small value - half of the minimum non-zero value of each element.
+# Step 4: Centered Log Ratio (CLR) Transformation
 
-Replacing zero values to allow for clr transformation
+## Background
 
-```{r}
-# Function to replace zeros with half of minimum non-zero value
+CLR transformation accounts for non-linear matrix effects in compositional data.
+- Suitable for correlation analysis
+- Improves statistical properties
+- Requires all positive values (no zeros)
+
+Reference: Bertrand et al. (2024)
+
+## 4.1 Replace Remaining Zero Values
+
+```{r clr_prepare}
+# For elements with occasional zero values (<5%):
+# Replace with half of minimum non-zero value in that element
+
 replace_zeros <- function(x) {
-  min_value <- min(x[x != 0])  # Find minimum non-zero value
-  if (is.na(min_value)) min_value <- 0  # Handle case with all zeros
-  x[x == 0] <- min_value / 2  # Replace zeros with half of minimum
+  # Find minimum non-zero value
+  min_value <- min(x[x != 0])
+  
+  # If all zeros, set minimum to small value
+  if (is.na(min_value)) {
+    min_value <- 1e-10
+  }
+  
+  # Replace zeros with half of minimum
+  x[x == 0] <- min_value / 2
+  
   return(x)
 }
 
-# Apply the function to each column of the data frame - replacing 0es
-data <- as.data.frame(sapply(pre_clean_XRF, replace_zeros))
+# Apply replacement to all elements
+data_clr_ready <- as.data.frame(sapply(pre_clean_XRF, replace_zeros))
+
+# Check for remaining zeros
+zero_count <- sum(apply(data_clr_ready, 2, function(x) sum(x == 0)))
+cat("Zero values remaining:", zero_count, "\n")
 ```
 
-Performing the clr tranformation
+## 4.2 Apply CLR Transformation
 
-```{r}
-# clr
-# Function to calculate geometric mean and normalize each row
+```{r clr_transform}
+# CLR = log(Xi / Geometric_Mean)
+# Where Geometric_Mean = (X1 × X2 × ... × Xn)^(1/n)
+
 normalize_by_geo_mean <- function(x) {
-  # Calculate geometric mean
+  # Calculate geometric mean for the observation
   geo_mean <- prod(x)^(1/length(x))
-  # Normalize each value by the row's geometric mean
+  
+  # Return ratios to geometric mean
   x / geo_mean
 }
 
-# Apply the function to each row of the 0 treated data
-normalized_data <- as.data.frame(apply(data, 1, normalize_by_geo_mean))
-geom_mean_data <- as.data.frame(t(normalized_data))
-clr <- log(geom_mean_data)
+# Apply to each row
+clr_normalized <- as.data.frame(apply(data_clr_ready, 1, normalize_by_geo_mean))
+clr_normalized <- as.data.frame(t(clr_normalized))
+
+# Take natural logarithm
+clr <- log(clr_normalized)
+
+cat("CLR transformation applied\n")
+cat("CLR data dimensions:", nrow(clr), "×", ncol(clr), "\n")
 ```
 
-Saving the clr data into an excel file
+## 4.3 Save CLR Data
 
-```{r}
-HZM_clrD <- bind_cols("Composite depth (mm)" = data_XRF_cl$depth_VT22, clr, data_XRF_cl[31:37])
+```{r save_clr}
+HZM_clrD <- bind_cols(
+  "Composite depth (mm)" = data_XRF_cl$depth_VT22,
+  clr,
+  data_XRF_cl[31:37]
+)
+
 write.xlsx(HZM_clrD, "../data/XRF_HZM_clr.xlsx", rowNames = FALSE)
+cat("CLR-transformed data saved to: ../data/XRF_HZM_clr.xlsx\n")
 ```
 
-# Additive log ratio
+---
 
-In case we wish to combine datasets for statistical operations, we first conduct PCA on clr data of our separate datasets, then select the explanatory variables and then tranform our selected variable to alr.
+# Step 5: Additive Log Ratio (ALR) Transformation
 
-In this way, we can then conduct PCA or clustering on merged datesets
+## Background
 
-Data selection
+ALR transformation for subset of elements selected for downstream PCA/clustering analysis.
+- Allows combination with other datasets
+- Uses selected elements only (columns 2-8)
+- Necessary before merging with external proxies
 
-```{r}
+## 5.1 Select Elements for ALR
+
+```{r alr_select}
+# Select subset of elements for combined dataset analysis
 data_for_alr <- select(pre_clean_XRF, 2:8)
 
+cat("Elements selected for ALR:", ncol(data_for_alr), "\n")
 ```
 
-Normalization of the data
+## 5.2 Normalize Data
 
-```{r}
-pre_alr_norm <- data_for_alr/rowSums(data_for_alr)*100
+```{r alr_normalize}
+pre_alr_norm <- data_for_alr / rowSums(data_for_alr) * 100
+
+# Verify normalization
+cat("Min row sum:", round(min(rowSums(pre_alr_norm)), 2), "%\n")
+cat("Max row sum:", round(max(rowSums(pre_alr_norm)), 2), "%\n")
 ```
 
-```{r}
+## 5.3 Apply ALR Function
+
+```{r alr_prep}
+# ALR = log(Xi / (100 - Xi))
+# Where Xi is the abundance percentage
+
 prep <- function(x) {
-  # Calculate the alr
-  norm <- x / (100 - x)
-  # Normalize each value
+  # Calculate ALR for each element
+  x / (100 - x)
 }
 
 prep_data <- as.data.frame(apply(pre_alr_norm, 1, prep))
 trans_data <- as.data.frame(t(prep_data))
 alr <- log(trans_data)
 
+cat("ALR transformation applied\n")
+cat("ALR data dimensions:", nrow(alr), "×", ncol(alr), "\n")
 ```
 
-```{r}
-lnCr <- log(data_XRF_cl$`Cr inc`/data_XRF_cl$`Cr coh`)
+## 5.4 Add Cr Ratio and Save
 
-HZM_alr_selected <- bind_cols("Composite depth (mm)" = data_XRF_cl$depth_VT22, alr, "ln(Inc/Coh)" = lnCr, data_XRF_cl[33:37])
+```{r alr_save}
+# Calculate Cr coherent/incoherent ratio as additional proxy
+lnCr <- log(data_XRF_cl$`Cr inc` / data_XRF_cl$`Cr coh`)
+
+# Combine into final dataset
+HZM_alr_selected <- bind_cols(
+  "Composite depth (mm)" = data_XRF_cl$depth_VT22,
+  alr,
+  "ln(Inc/Coh)" = lnCr,
+  data_XRF_cl[33:37]  # Age-depth model columns
+)
 
 write.xlsx(HZM_alr_selected, "../data/XRF_HZM_alr.xlsx", rowNames = FALSE)
-
+cat("ALR-transformed data saved to: ../data/XRF_HZM_alr.xlsx\n")
 ```
+
+---
+
+# Session Information
+
+```{r session_info}
+sessionInfo()
+```
+
+---
+
+# Summary
+
+**Outputs generated:**
+- ✓ XRF_HZM_norm.xlsx (Normalized, % counts)
+- ✓ XRF_HZM_clr.xlsx (CLR-transformed)
+- ✓ XRF_HZM_alr.xlsx (ALR-transformed for merged analysis)
+- ✓ HZM_HR_cleaned.xlsx (Cleaned high-resolution data)
+
+**Next steps:**
+- Use normalized data (XRF_HZM_norm.xlsx) for proxy correlations
+- Use CLR data (XRF_HZM_clr.xlsx) for PCA on XRF alone
+- Use ALR data (XRF_HZM_alr.xlsx) for combined multi-proxy analysis
+
+---
+
+*Last updated: 2025-03-11*
+*Notebook version: 1.0*

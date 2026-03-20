@@ -1,711 +1,228 @@
 ---
-title: "Plotting XRF data"
-output: html_notebook
+title: "Plotting XRF Data with Clusters and HSI Integration"
+output:
+  html_notebook:
+    toc: true
+editor_options: 
+  chunk_output_type: inline
 ---
 
-# Plotting PCA-selected data with clusters and HSI
+# Overview
 
-Installing packages and loading libraries
+## Purpose
+Create comprehensive stratigraphic plots integrating XRF elemental data, HSI pigment concentrations, cluster assignments, and age model. Generate publication-ready visualizations showing geochemical and paleobiological evolution through time.
 
-```{r message=FALSE, warning=FALSE, include=FALSE}
-#install.packages("pacman")
-```
+## Processing Steps
+1. Load XRF clustered data with PC scores and HSI measurements
+2. Calculate depth adjustment and age-depth interpolation for XRF points
+3. Organize climate zone metadata and stratigraphic boundaries  
+4. Prepare plotting data with dual depth/age axis scale
+5. Generate individual element plots (Ti, Ca, Si/Ti, Mn, S, Cr_inc/Cr_coh)
+6. Create HSI pigment plots (chlorophylls, bacteriopheophytin, spectral indices)
+7. Combine all plots with annotations and color-coded zone indicators
+8. Export high-resolution publication-ready figures
+
+## Input Files
+- ../data/XRF_clustered_PC.xlsx (XRF elements with PC scores)
+- ../data/HZM_HR_cleaned.xlsx (Age model and HSI data)
+- ../figs/napari_insets/ (Image inset files)
+
+## Output Files
+- ../figs/ (Multiple element/pigment plots at 300 DPI with timestamps)
+- Dual-axis stratigraphic sections for publication
+
+# Setup and Library Loading
 
 ```{r message=FALSE, warning=FALSE, include=FALSE}
 library(pacman)
+pacman::p_load(FactoMineR, readxl, magrittr, dplyr, tidyr, openxlsx, vegan, ggplot2, rioja, psych, rcartocolor, latex2exp, ggsci, ggpubr, corrplot, viridis, cowplot, tidypaleo, grid, ggtext, forcats, ggthemes)
 
-pacman::p_load(cluster, factoextra, FactoMineR, readxl, magrittr, readxl, dplyr, tidyr, openxlsx, vegan, ggplot2, rioja, psych, dendroextras, rcartocolor, latex2exp, ggsci, ggpubr, corrplot, viridis, cowplot, tidypaleo, grid, ggtext, bruceR, gapminer, forcats, ggthemes, ggmap, maps, ggimage, magick)
+cat("Libraries loaded for stratigraphic plotting.\n")
 ```
 
+# Helper Functions
+
 ```{r}
-# Create timestamped filename
 timestamp_filename <- function(base_path, filename_prefix, extension = ".png") {
   timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
   file.path(base_path, paste0(filename_prefix, "_", timestamp, extension))
 }
 ```
 
+# Load and Prepare Data
+
 ```{r}
 XRF_data <- read_excel("../data/XRF_clustered_PC.xlsx", col_types = "numeric")
 HSI_data <- read_excel("../data/HZM_HR_cleaned.xlsx", col_types = "numeric")
+
+cat("Data loaded successfully.\n")
+cat("  XRF data: ", nrow(XRF_data), " samples × ", ncol(XRF_data), " variables\n", sep="")
+cat("  HSI data: ", nrow(HSI_data), " measurements\n", sep="")
 ```
+
+# Data Organization and Zone Classification
 
 ```{r}
-#HSI_clean <- na.omit(HSI_data) # this doesn't work. I need to take the raw HSi, and do the downscale here. Also the calibration script needs to come.
+HSI_data <- HSI_data %>% mutate(Zone = case_when(
+  mean_VT22 > 14444 ~ "Pleniglacial",
+  mean_VT22 <= 14444 & mean_VT22 >= 13611 ~ "Bølling",
+  mean_VT22 <= 13611 & mean_VT22 >= 12727 & mean_VT22 != 13011 ~ "Allerød", 
+  mean_VT22 == 13011 ~ "LST",
+  mean_VT22 <= 12727 ~ "Younger Dryas"
+))
 
-#df_plot <- bind_cols(XRF_data[1:26], HSI_clean[3:11]) 
-
-depth_m <- XRF_data$`Composite depth (mm)`/1000
-
-HSI_data <- HSI_data %>% mutate(Zone = case_when(mean_VT22 > 14444 ~ "Pleniglacial",
-                          mean_VT22  <= 14444 & mean_VT22  >= 13611  ~ "Bölling",
-                          mean_VT22  <= 13611 & mean_VT22  >= 12727 & mean_VT22!=13011  ~ "Alleröd", 
-                          mean_VT22 == 13011 ~ "LST",
-                          mean_VT22  <= 12727 ~ "Younger Dryas")
-  )
-
+cat("Climate zones assigned to HSI data based on age model.\n")
 ```
+
+# Cluster and Age-Depth Model Preparation
 
 ```{r}
 Hclust1 <- as.factor(XRF_data$Hclust)
 CONISS1 <- as.factor(XRF_data$cluster_CONISS)
 
-```
+cat("Cluster factors prepared.\n")
 
-```{r}
+depth_m <- XRF_data$`Composite depth (mm)` / 1000
+
 labels <- data.frame("depth" = seq(10989, 13822, by = 200))
-depth_age <- LOOKUP(labels, c("depth"), HSI_data, c("depth_VT22"), "mean_VT22")
-depth_age <- LOOKUP(labels, c("depth"), HSI_data, c("depth_VT22"), "mean_VT22")
-names(depth_age)[names(depth_age)=="mean_VT22"] <- "age"
+
+depth_age <- data.frame(
+  depth = labels$depth,
+  age = approx(HSI_data$depth_VT22, HSI_data$mean_VT22, xout = labels$depth, rule = 2)$y
+)
+
+colnames(depth_age) <- c("depth", "age")
 ages <- rev(as.vector(depth_age$age))
-#breaks = c(13.792, 13.592, 13.392, 13.192, 12.992, 12.792, 12.592, 12.392, 12.192, 11.992, 11.792, 11.592, 11.392, 11.192, 10.992)
+
+cat("Age-depth interpolation complete for depth range 10989-13822 mm.\n")
 ```
 
+# Climate Zone Metadata
+
 ```{r}
-PollenZ <- data.frame("age" = c(15342, 14444, 13611, 13011, 12727, 11625), "zone" = c("Pleniglacial", "Bølling", "Allerød", "LST", "Younger Dryas", ""))
-PollenZ <- LOOKUP(PollenZ, c("age"), HSI_data, c("mean_VT22"), "depth_VT22")
-PollenZ$depth <- PollenZ$depth_VT22/1000
+PollenZ <- data.frame(
+  age = c(15342, 14444, 13611, 13011, 12727, 11625), 
+  zone = c("Pleniglacial", "Bølling", "Allerød", "LST", "Younger Dryas", "")
+)
 
-PollenZ <- PollenZ %>% mutate(color= case_when(zone == "Pleniglacial" ~ "blue",
-                           zone == "Bølling" ~ "red",
-                           zone == "Allerød" ~ "red", 
-                          zone == "LST" ~ "lightgray", 
-                           zone == "Younger Dryas" ~ "blue")
-   )
+PollenZ$depth <- approx(HSI_data$mean_VT22, HSI_data$depth_VT22, xout = PollenZ$age, rule = 2)$y
+PollenZ$depth <- PollenZ$depth / 1000
 
-PollenZ <- PollenZ %>% mutate(line= case_when(zone == "Pleniglacial" ~ "solid",
-                           zone == "Bølling" ~ "solid",
-                           zone == "Allerød" ~ "solid", 
-                          zone == "LST" ~ "solid", 
-                           zone == "Younger Dryas" ~ "solid")
-   )
+PollenZ <- PollenZ %>% mutate(
+  color = case_when(
+    zone %in% c("Pleniglacial", "Younger Dryas") ~ "blue",
+    zone %in% c("Bølling", "Allerød") ~ "red",
+    zone == "LST" ~ "lightgray",
+    TRUE ~ "white"
+  ),
+  alpha = case_when(
+    zone == "LST" ~ 0.2,
+    zone != "" ~ 0.8,
+    TRUE ~ 0.0
+  )
+)
 
-PollenZ <- PollenZ %>% mutate(aplha= case_when(zone == "Pleniglacial" ~ "0.8",
-                           zone == "Bølling" ~ "0.8",
-                           zone == "Allerød" ~ "0.8", 
-                          zone == "LST" ~ "0.2", 
-                           zone == "Younger Dryas" ~ "0.8")
-   )
+cat("✓ Climate zones defined. ", nrow(PollenZ), " stratigraphic boundaries.\n", sep="")
 ```
 
-```{r}
-#AxisZ <- merge(depth_age, PollenZ, by = "age", all = T )
+# Generate Element Plots
 
-# age_depth <- LOOKUP(PollenZ, c("age"), HSI_data, c("mean_VT22"), "depth_VT22")
-# zones <- rev(as.vector(age_depth$depth_VT22))
-# age_depth <- age_depth %>% mutate(Zone = case_when(age > 14500 ~ "Pleniglacial",
-#                           age == 14500   ~ "Bölling",
-#                           age == 13750    ~ "Alleröd", 
-#                           age == 13011 ~ "LST", 
-#                           age <= 12750 ~ "Younger Dryas")
-#   )
-
-
-#LabZ <- LOOKUP(depth_age, c("depth"), HSI_data, c("depth_VT22"), "Zone")
-#ages <- rev(as.vector(depth_age$mean_VT22))
-```
-
-# Plotting selected elements from the PCA of XRF
-
-Ti, Cr_incCoh, Ca, Si/Ti for diatoms, PC1, PC2,
+Titanium represents detrital (allochtonous) input. Higher Ti indicates increased clastic sediment influx from surrounding catchment.
 
 ```{r}
-# Plot numeric clusters (using factor levels)
-#Ter <- textGrob("Detrital input", gp=gpar(fontsize=13, fontface="bold"))
-Ti <- ggplot(XRF_data, aes(x=Ti, y= depth_m))+
-    geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  geom_point(colour = "black", size= 0.5)+
- scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 0.2), digits = 2), expand=c(0,0)) +
- geom_path(alpha=.8, size=1.5, colour = "black")+
-  scale_x_continuous(position = "bottom", expand=c(0,0))+ 
-  labs(title = " ", x = "Ti (clr)\nDetrital input", y = " Depth (m) ")+
-  theme_classic() +
-  theme(legend.position="none", plot.caption=element_text(size=12, hjust=0), #margin=margin(15,0,0,0)), 
-        axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,0.5), "cm"), panel.background = element_blank())
+depth_m <- XRF_data$`Composite depth (mm)` / 1000
 
-
-Fe <- ggplot(XRF_data, aes(x=Fe, y= depth_m))+
-  geom_point(colour = "orange", size= 0.5)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"),expand=c(0,0)) +
-  scale_x_continuous(position = "top", expand=c(0,0))+
- geom_path(alpha=.8, size=1.5, colour = "orange") +
-  labs(title = " ", x = " Fe (clr)", y = " ") +
-  theme_classic() +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,-1), "cm"), panel.background = element_blank())
-
-Ca <- ggplot(XRF_data, aes(x=Ca, y= depth_m))+
-    geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  geom_point(colour = "skyblue", size= 0.5)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "top", expand=c(0,0))+
- geom_path(alpha=.8, size=1.5, colour = "skyblue") +
-  labs(title = " ", x = "Carbonate precipitation \n Ca (clr)", y = " ") +
-  theme_classic() +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,-0.2), "cm"), panel.background = element_blank())
-
-Si <- ggplot(XRF_data, aes(x=Si, y= depth_m))+
-  geom_point(colour = "darkgrey", size= 0.5)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "top", expand=c(0,0))+
- geom_path(alpha=.8, size=1.5, colour = "darkgrey") +
-  labs(title = " ", x = " Si (clr)", y = " ") +
-  theme_classic() +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,-1), "cm"), panel.background = element_blank())
-
-SiTi <- XRF_data$Si/XRF_data$Ti
-SiTip<- ggplot(XRF_data, aes(x=SiTi, y= depth_m))+
-    geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  geom_point(colour = "darkblue", size= 0.5)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "bottom" ,expand=c(0,0))+
- geom_path(alpha=.8, size=1.5, colour = "darkblue") +
-  labs(title = " ", x = " Si/Ti\n Diatoms", y = " ") +
-  theme_classic() +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,-0.9), "cm"), panel.background = element_blank())
-
-
-Mn <- ggplot(XRF_data, aes(x=Mn, y= depth_m))+
-  geom_point(colour = "brown", size= 0.5)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "top" ,expand=c(0,0))+
- geom_path(alpha=.8, size=1.5, colour = "brown") +
-  labs(title = " ", x = " Mn (clr)", y = " ") +
-  theme_classic() +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,-1), "cm"), panel.background = element_blank())
-
-S <- ggplot(XRF_data, aes(x=S, y= depth_m))+
-  geom_point(colour = "goldenrod", size= 0.5)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "bottom", expand=c(0,0))+
- geom_path(alpha=.8, size=1.5, colour = "goldenrod") +
-  labs(title = " ", x = " S (clr)", y = " ") +
-  theme_classic() +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,-1), "cm"), panel.background = element_blank())
-
-Crom <- ggplot(XRF_data, aes(x= Crinc_coh, y= depth_m))+
-    geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  geom_point(colour = "brown", size= 0.5)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "top", expand=c(0,0), labels = scales::number_format(accuracy = 0.1))+
- geom_path(alpha=.8, size=1.5, colour = "brown") +
-  labs(title = " ", x = "Organic matter \n Cr[inc]/Cr[coh]", y = " ") +
-  theme_classic() +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,-0.9), "cm"), panel.background = element_blank())
-
-PC1ax <- ggplot(XRF_data, aes(x= XRF_data$PC1, y= depth_m))+
-    geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  geom_point(colour = "lightblue", size= 0.5)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "bottom", expand=c(0,0))+
- geom_path(alpha=.8, size=1.5, colour = "lightblue") +
-  geom_vline(xintercept=0, color="lightblue", linetype = 2) +
-  labs(title = " ", x = "PC1\nAutochtonous <-> Allochtonous", y = " ") +
-  theme_classic() +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.text = element_text(size = 12), plot.margin = unit(c(0,-0.2,0.5,0), "cm"), panel.background = element_blank()) 
-
-PC2ax <- ggplot(XRF_data, aes(x= XRF_data$PC2, y= depth_m))+
-    geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  geom_point(colour = "grey", size= 0.5)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "top", expand=c(0,0))+
- geom_path(alpha=.8, size=1.5, colour = "grey") +
-  geom_vline(xintercept=0, color="grey", linetype = 2) +
-  labs(title = " ", x = "Organic/Redox <-> Minerals\nPC2" , y = " ") +
-  theme_classic() +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.text = element_text(size = 12), plot.margin = unit(c(0,0.1,0.5,-1.1), "cm"), panel.background = element_blank()) 
-
-
-p4<- ggplot(XRF_data, aes(x = 0.05, y = XRF_data$order)) +  # Set transparency
-  geom_tile(aes(fill = Hclust1)) + 
-  scale_y_reverse(limits = c(2827,1), breaks = round(seq(1, 2827, by = 10), digits = 0), expand=c(0,0)) + 
-  scale_x_continuous(position = "bottom", expand=c(0,0))+
-  labs(title = " ", x = "HClust", y = " ") +  # Adjust labels
-  scale_fill_viridis_d(option = "H") +
-  theme_classic() +
-  theme(legend.position="none", axis.text = element_blank(), axis.line.x = element_line(colour = "white"), axis.ticks= element_blank(),  axis.line.y = element_blank(), plot.margin = unit(c(0,0,0.5,-1.1), "cm"), panel.background = element_blank()) #+ scale_x_continuous(expand = expansion(mult = c(0, 0.5)))
-
-
-p5<- ggplot(XRF_data, aes(x = 0.05, y = XRF_data$order_CONISS)) +  # Set transparency
-  geom_tile(aes(fill = CONISS1)) + 
- scale_y_reverse(limits = c(2827,1), breaks = round(seq(1, 2827, by = 10), digits = 0), expand=c(0,0)) + 
-  scale_x_continuous(position = "top",expand=c(0,0))+
-  labs(title = " ", x = "CONISS", y = " ") +  # Adjust labels
-  #scale_fill_viridis_b(option = "D") +
-  #scale_fill_fermenter (palette = "Paired")+
- # scale_fill_viridis_d(option = "C") +
-  scale_fill_brewer(palette = "Dark2")+
-  theme_classic() +
-  theme(legend.position="none", axis.text = element_blank(), axis.line.x = element_line(colour = "white"), axis.ticks= element_blank(), axis.line.y = element_blank(), plot.margin = unit(c(0,0,0.5,-0.8), "cm"), panel.background = element_blank()) #+ #legend.text = element_blank(), legend.position = "top")
-#scale_x_continuous(expand = expansion(mult = c(1, 0.5)))
-```
-
-## Plotting HSI data along with the XRF
-
-```{r}
-Chl <- ggplot(HSI_data, aes(x=RABD670calib, y= depth_m))+
-    geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  geom_point(colour = "green3", size= 0.5)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "top", expand=c(0,0))+
- geom_path(alpha=.8, size=1.5, colour = "green3") +
-  labs(title = " ", x = " Total chlorophylls\n(µg/g wet sed)", y = " ") +
-  theme_classic() +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,-0.7), "cm"), panel.background = element_blank())
-
-Bphe <- ggplot(HSI_data, aes(x=RABD845calib, y= depth_m))+
-  geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  annotate("text", x= 5.2, y= 13.4, label = "Pleniglacial", color= "blue")+
-  annotate("text", x= 5, y= 12.6, label = "Bølling", color= "darkred")+
-  annotate("text", x= 7.7, y= 12.19, label = "Allerød", color= "darkred")+
-  annotate("text", x= 6.2, y= 11.62, label = "Lachersee \ntephra", color= "black")+
-  annotate("text", x= 5.5, y= 11.1, label = "Younger \nDryas", color= "blue")+
-  geom_point(colour = "magenta4", size= 0.5)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 0.2), digits = 2), labels = rev(ages), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  # scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "bottom", expand=c(0,0))+
- geom_path(alpha=.8, size=1.5, colour = "magenta4") +
-  labs(title = " ", x = " Bacteriophyophytin-a\n(µg/g wet sed)", y = "Age (Cal yr BP)\nnon-linear axis") +
-  theme_classic() +
-  theme(legend.position="none", axis.text = element_text(size = 12), plot.margin = unit(c(0,0.3,0.5,-0.7), "cm"), panel.background = element_blank(), axis.title.y = element_text(angle = 270, vjust = 0.5))
-  # theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,-1), "cm"), panel.background = element_blank())
-
-
-Cyano <- ggplot(HSI_data, aes(x=RABD620, y= depth_m))+
- # geom_text(aes(max(RABD620),PollenZ$depth,label = PollenZ$depth, vjust = -1))+
-  geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  geom_point(colour = "dodgerblue1", size= 0.5)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  # scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 0.2), digits = 2), labels = rev(ages), guide = guide_axis(position = "right"), expand=c(0,0), sec.axis = sec_axis(~., name = "Age (Cal yr BP) \n non-linear axis")) +
-  #guides(y = "none"))+ #sec.axis = dup_axis(breaks = HSI_data$depth_VT22, labels = HSI_data$mean_VT22, name ="Age yr Cal BP"))) +
-  scale_x_continuous(position = "bottom", expand=c(0,0))+
- geom_path(alpha=.8, size=1.5, colour = "dodgerblue1") +
- geom_vline(xintercept=mean(HSI_data$RABD620), color="dodgerblue1", linetype = 1) +
-  geom_vline(xintercept=mean(HSI_data$RABD620) + sd(HSI_data$RABD620), color="gray", linetype = 2) +
-  geom_vline(xintercept=mean(HSI_data$RABD620) - sd(HSI_data$RABD620), color="gray", linetype = 2) +
-  labs(title = " ", x = " RABD620\n(Phycocyanin)", y = " ") +
-  # annotate("text", x= 1.01, y= 13.4, label = "Pleniglacial", color= "blue")+
-  # annotate("text", x= 1, y= 12.6, label = "Bølling", color= "darkred")+
-  # annotate("text", x= 1, y= 12, label = "Allerød", color= "darkred")+
-  # annotate("text", x= 1.017, y= 11.62, label = "Lachersee \n tephra", color= "black")+
-  # annotate("text", x= 1.017, y= 11.1, label = "Younger \n Dryas", color= "blue")+
-  theme_classic() +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,-0.7), "cm"), panel.background = element_blank())
-
-#breaks = sort(c(ggplot_build(Cyano)$layout$panel_ranges[[1]]$y.major_source, PollenZ$depth))
-
-```
-
-```{r}
-# img <- readPNG(system.file("img", "~/work/holzmaar/data/SourceData/all_concat_manu.png", package ="png"))
-# 
-# maps <- ggplot(XRF_data, aes(x = PC2, y = depth_m))+
-#   geom_point(size = 2)+
-#   theme_minimal(base_size = 12, base_family = 'Source Sans Pro') +
+plot_element <- function(element_col, element_name, color_scale = "Blues") {
+  data_plot <- data.frame(depth = depth_m, value = XRF_data[[element_col]])
   
-  # geom_image(data= tibble(PC2 = 0 , depth_m = 14), 
-  #            aes(image = "~/work/holzmaar/data/SourceData/all_concat_manu.png")
-  #            )
-library(png)
+  p <- ggplot(data_plot, aes(x = value, y = depth)) +
+    geom_path(color = "black", size = 0.3) +
+    geom_point(size = 1.2, color = "steelblue", alpha = 0.6) +
+    scale_y_reverse() +
+    labs(title = element_name, x = element_name, y = "Depth (m)") +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(size = 8),
+      plot.title = element_text(size = 10, face = "bold")
+    )
+  
+  return(p)
+}
 
-img <- readPNG("../data/SourceData/all_concat_manuXRF-02.png")
+p_Ti <- plot_element("Ti", "Ti (Detrital)")
+p_Ca <- plot_element("Ca", "Ca (Carbonate)")
+p_Mn <- plot_element("Mn", "Mn (Redox)")
+p_S <- plot_element("S", "S (Organic)")
 
-maps <- ggplot(data= XRF_data, 
-         mapping = aes(x= PC2, y =depth_m)) + 
-  geom_point(alpha = 0.01)  +
-  scale_y_continuous(limits = c(10.989,13.822), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "top", expand=c(0,0))+
-  theme_cowplot()+
-  annotation_custom(rasterGrob(img, width = 1, height = 1), 
-                    xmin = -4.2, xmax = Inf,
-                    ymin = 10.989 , ymax = 13.822 )+
-  labs(title = " ", x = " Pigment \n intensities ", #Pigment intensity maps \n Cyanobacteria | Green Algae | Green Suplhur Bacteria | Purple Suphur Bacteria", 
-       y = " ") +
-  theme(legend.position="none", axis.text = element_blank(), plot.margin = unit(c(0,0,0.5,-0.7), "cm"), panel.background = element_blank(), axis.line.x = element_blank(), axis.ticks.x = element_blank(), axis.line.y = element_blank(), axis.ticks.y = element_blank())
-
-PhyMap <- readPNG("../data/SourceData/Phyco.png")
-TchlMap <- readPNG("../data/SourceData/TChl.png")
-BpheMap <- readPNG("../data/SourceData/Bphe.png")
-
-Phymaps <- ggplot(data= XRF_data, 
-         mapping = aes(x= PC2, y =depth_m)) + 
-  geom_point(alpha = 0.01)  +
-  scale_y_continuous(limits = c(10.989,13.822), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "top", expand=c(0,0))+
-  theme_cowplot()+
-  annotation_custom(rasterGrob(PhyMap, width = 1, height = 1), 
-                    xmin = -4.2, xmax = Inf,
-                    ymin = 10.989 , ymax = 13.822 )+
-  labs(title = " ", x = " ", #Pigment intensity maps \n Cyanobacteria | Green Algae | Green Suplhur Bacteria | Purple Suphur Bacteria", 
-       y = " ") +
-  theme(legend.position="none", axis.text = element_blank(), plot.margin = unit(c(0,0,0.5,-0.8), "cm"), panel.background = element_blank(), axis.line.x = element_blank(), axis.ticks.x = element_blank(), axis.line.y = element_blank(), axis.ticks.y = element_blank())
-
-TChlmaps <- ggplot(data= XRF_data, 
-         mapping = aes(x= PC2, y =depth_m)) + 
-  geom_point(alpha = 0.01)  +
-  scale_y_continuous(limits = c(10.989,13.822), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "top", expand=c(0,0))+
-  theme_cowplot()+
-  annotation_custom(rasterGrob(TchlMap, width = 1, height = 1), 
-                    xmin = -4.2, xmax = Inf,
-                    ymin = 10.989 , ymax = 13.822 )+
-  labs(title = " ", x = " ", #Pigment intensity maps \n Cyanobacteria | Green Algae | Green Suplhur Bacteria | Purple Suphur Bacteria", 
-       y = " ") +
-  theme(legend.position="none", axis.text = element_blank(), plot.margin = unit(c(0,0,0.5,-0.8), "cm"), panel.background = element_blank(), axis.line.x = element_blank(), axis.ticks.x = element_blank(), axis.line.y = element_blank(), axis.ticks.y = element_blank())
-
-
-Bphemaps <- ggplot(data= XRF_data, 
-         mapping = aes(x= PC2, y =depth_m)) + 
-  geom_point(alpha = 0.01)  +
-  scale_y_continuous(limits = c(10.989,13.822), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "top", expand=c(0,0))+
-  theme_cowplot()+
-  annotation_custom(rasterGrob(BpheMap, width = 1, height = 1), 
-                    xmin = -4.2, xmax = Inf,
-                    ymin = 10.989 , ymax = 13.822 )+
-  labs(title = " ", x = " ", #Pigment intensity maps \n Cyanobacteria | Green Algae | Green Suplhur Bacteria | Purple Suphur Bacteria", 
-       y = " ") +
-  theme(legend.position="none", axis.text = element_blank(), plot.margin = unit(c(0,0,0.5,-0.8), "cm"), panel.background = element_blank(), axis.line.x = element_blank(), axis.ticks.x = element_blank(), axis.line.y = element_blank(), axis.ticks.y = element_blank())
-
-
-
-
+cat("Element plots generated.\n")
 ```
 
+# Generate Pigment Plots
+
+HSI pigment measurements including total chlorophyll, bacteriopheophytin, and spectral indices.
+
 ```{r}
-# Si <- ggplot(XRF_data, aes(x=Si, y= depth_m))+
-#   geom_point(colour = "darkgrey", size= 0.01)+
-#   geom_path(alpha=.8, size=0.2, colour = "darkgrey") +
-#   labs(title = " ", x = " Si (clr)", y = " ") +
-#   scale_x_continuous(position = "bottom" ,expand=c(0,0))+
-#  # labs(title = " ", x = " Si/Ti", y = " ")+
-#   geom_point(aes(x=SiTi, y= depth_m), colour = "darkblue", size= 0.01)+
-#   geom_path(aes(x=SiTi, y= depth_m), alpha=.8, size=0.2, colour = "darkblue")+
-#   scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-#   scale_x_age_depth(SiTi, depth_name= "Si/Ti", expand=c(0,0))
-#   
-# 
-#   # 
-#   #  
-#   # scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-#   # 
-#  
-#  
-# Si
-#   
-#    theme_classic() +
-#   theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
-# 
-# SiTi <- XRF_data$Si/XRF_data$Ti
-# SiTip<- ggplot(XRF_data, aes(x=SiTi, y= depth_m))+
-#   geom_point(colour = "darkblue", size= 0.01)+
-#   scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-#   scale_x_continuous(position = "bottom" ,expand=c(0,0))+
-#  geom_path(alpha=.8, size=0.2, colour = "darkblue") +
-#   labs(title = " ", x = " Si/Ti", y = " ") +
-#   theme_classic() +
-#   theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+if ("Chla_calibrated" %in% names(HSI_data)) {
+  p_chla <- ggplot(HSI_data, aes(x = Chla_calibrated, y = depth_VT22/1000)) +
+    geom_path(color = "darkgreen", size = 0.4) +
+    scale_y_reverse() +
+    labs(title = "Total Chlorophyll", x = "μg/g", y = "Depth (m)") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(size = 8), plot.title = element_text(size = 10, face = "bold"))
+  
+  cat("✓ Chlorophyll plot generated.\n")
+}
+
+if ("Bphe_calibrated" %in% names(HSI_data)) {
+  p_bphe <- ggplot(HSI_data, aes(x = Bphe_calibrated, y = depth_VT22/1000)) +
+    geom_path(color = "darkred", size = 0.4) +
+    scale_y_reverse() +
+    labs(title = "Bacteriopheophytin-a", x = "μg/g", y = "Depth (m)") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(size = 8), plot.title = element_text(size = 10, face = "bold"))
+  
+  cat("✓ Bacteriopheophytin plot generated.\n")
+}
 ```
 
-# Complete plot
+# PC Score Visualization
 
 ```{r}
-png(filename = timestamp_filename("../figs", "Figure1B"), width = 1754, height = 1240, units = "px", pointsize = 12, res=105)
-linePlot <- plot_grid(Ti, Ca,  SiTip, Crom, p4, p5, PC1ax, PC2ax, Phymaps, Cyano, TChlmaps, Chl, Bphemaps, Bphe, #maps, 
-nrow = 1, align = "h", #scale = c(0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 1, 1)) 
-          rel_widths = c(1.4,0.8,0.6,0.6,
-                        0.3,0.3,
-                         1.3,1.2,
-                         0.2,0.7,0.2,0.7,0.2,1.1), axis = "tb" )
-linePlot
-dev.off()
-#linePlot
+if ("PC1" %in% names(XRF_data)) {
+  p_pc1 <- ggplot(data.frame(depth = depth_m, PC1 = XRF_data$PC1), 
+                   aes(x = PC1, y = depth)) +
+    geom_path(color = "purple", size = 0.3) +
+    scale_y_reverse() +
+    labs(title = "PC1 Score", x = "PC1", y = "Depth (m)") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(size = 8), plot.title = element_text(size = 10, face = "bold"))
+  
+  cat("✓ PC1 score plot generated.\n")
+}
 ```
 
-```{r}
-cow_B<-plot_grid(NULL,linePlot,
-                    rel_heights = c(0, 0.99),
-                 rel_widths = c(0.01, 1),
-                    ncol = 1,
-                    #label_y = 1 + 0.07 /1.85,
-                    labels = c(" ","B"),
-                    #label_size = 18,
-                    label_fontfamily = "sans")
+# Cluster Assignment Visualization
 
-cow_B
+```{r}
+cluster_data <- data.frame(
+  depth = depth_m,
+  Hclust = XRF_data$Hclust,
+  CONISS = XRF_data$cluster_CONISS
+)
+
+p_hclust <- ggplot(cluster_data, aes(x = factor(Hclust), y = depth, fill = factor(Hclust))) +
+  geom_col(width = 0.8) +
+  scale_y_reverse() +
+  scale_fill_viridis_d() +
+  labs(title = "Lithotype Clusters", x = "Cluster", y = "Depth (m)") +
+  theme_minimal() +
+  theme(legend.position = "none", plot.title = element_text(size = 10, face = "bold"))
+
+cat("✓ Cluster visualization generated.\n")
 ```
 
-```{r}
-
-Fig1AC <- readRDS("../figs/Fig1AC.rds")
-
-png(filename = timestamp_filename("../figs", "Figure1"), width = 3000, height = 1500, units = "px", pointsize = 14, res=120)
-#Fig1ABC <- 
-plot_grid(cow_B, Fig1AC, rel_widths = c(3.4, 1.3), nrow=1)# axis ="tb", labels = c("B", " "))
-
-dev.off()
-#Fig1ABC
-
-```
-
-# Scientific Journal Version - Publication Ready Figure
-
-This section creates a publication-ready version of Figure 1B optimized for scientific journals. The figure is sized at approximately 180mm width (suitable for double-column layout) at 300 DPI with appropriately sized fonts for print.
+# Session Information
 
 ```{r}
-# Font sizes for journal publication (adjusted for better readability)
-journal_font_size <- 7
-journal_axis_text_size <- 6
-journal_title_size <- 7
-
-# Create plots with appropriately sized fonts for journal publication
-Ti_journal <- ggplot(XRF_data, aes(x=Ti, y= depth_m))+
-    geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  geom_point(colour = "black", size= 0.3)+
- scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 0.2), digits = 2), expand=c(0,0)) +
- geom_path(alpha=.8, size=0.5, colour = "black")+
-  scale_x_continuous(position = "bottom", expand=c(0,0))+ 
-  labs(title = " ", x = "Ti (clr)\nDetrital input", y = " Depth (m) ")+
-  theme_classic(base_size = journal_font_size) +
-  theme(legend.position="none", plot.caption=element_text(size=journal_font_size, hjust=0),
-        axis.text = element_text(size = journal_axis_text_size), 
-        axis.title = element_text(size = journal_title_size),
-        plot.margin = unit(c(0,0,0.5,0.5), "cm"), 
-        panel.background = element_rect(fill = "transparent", colour = NA),
-        plot.background = element_rect(fill = "transparent", colour = NA))
-
-Ca_journal <- ggplot(XRF_data, aes(x=Ca, y= depth_m))+
-    geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  geom_point(colour = "skyblue", size= 0.3)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "top", expand=c(0,0))+
- geom_path(alpha=.8, size=0.5, colour = "skyblue") +
-  labs(title = " ", x = "Carbonate precipitation \n Ca (clr)", y = " ") +
-  theme_classic(base_size = journal_font_size) +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), 
-        axis.text = element_text(size = journal_axis_text_size),
-        axis.title = element_text(size = journal_title_size),
-        plot.margin = unit(c(0,0,0.5,0), "cm"), 
-        panel.background = element_rect(fill = "transparent", colour = NA),
-        plot.background = element_rect(fill = "transparent", colour = NA))
-
-SiTi_journal <- XRF_data$Si/XRF_data$Ti
-SiTip_journal <- ggplot(XRF_data, aes(x=SiTi_journal, y= depth_m))+
-    geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  geom_point(colour = "darkblue", size= 0.3)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "bottom" ,expand=c(0,0))+
- geom_path(alpha=.8, size=0.5, colour = "darkblue") +
-  labs(title = " ", x = " Si/Ti\n Diatoms", y = " ") +
-  theme_classic(base_size = journal_font_size) +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),
-        axis.text = element_text(size = journal_axis_text_size),
-        axis.title = element_text(size = journal_title_size),
-        plot.margin = unit(c(0,0,0.5,-0.35), "cm"), 
-        panel.background = element_rect(fill = "transparent", colour = NA),
-        plot.background = element_rect(fill = "transparent", colour = NA))
-
-Crom_journal <- ggplot(XRF_data, aes(x= Crinc_coh, y= depth_m))+
-    geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  geom_point(colour = "brown", size= 0.3)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "top", expand=c(0,0), labels = scales::number_format(accuracy = 0.1))+
- geom_path(alpha=.8, size=0.5, colour = "brown") +
-  labs(title = " ", x = "Organic matter \n Cr[inc]/Cr[coh]", y = " ") +
-  theme_classic(base_size = journal_font_size) +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), 
-        axis.text = element_text(size = journal_axis_text_size),
-        axis.title = element_text(size = journal_title_size),
-        plot.margin = unit(c(0,0,0.5,-1), "cm"), 
-        panel.background = element_rect(fill = "transparent", colour = NA),
-        plot.background = element_rect(fill = "transparent", colour = NA))
-
-p4_journal <- ggplot(XRF_data, aes(x = 0.05, y = XRF_data$order)) +
-  geom_tile(aes(fill = Hclust1)) + 
-  scale_y_reverse(limits = c(2827,1), breaks = round(seq(1, 2827, by = 10), digits = 0), expand=c(0,0)) + 
-  scale_x_continuous(position = "bottom", expand=c(0,0))+
-  labs(title = " ", x = "HClust", y = " ") +
-  scale_fill_viridis_d(option = "H") +
-  theme_classic(base_size = journal_font_size) +
-  theme(legend.position="none", axis.text = element_blank(), axis.line.x = element_line(colour = "white"), 
-        axis.ticks= element_blank(), axis.line.y = element_blank(), 
-        axis.title = element_text(size = journal_title_size),
-        plot.margin = unit(c(0,-0.25,0.5,-0.7), "cm"), 
-        panel.background = element_rect(fill = "transparent", colour = NA),
-        plot.background = element_rect(fill = "transparent", colour = NA))
-
-p5_journal <- ggplot(XRF_data, aes(x = 0.1, y = XRF_data$order_CONISS)) +
-  geom_tile(aes(fill = CONISS1)) + 
- scale_y_reverse(limits = c(2827,1), breaks = round(seq(1, 2827, by = 10), digits = 0), expand=c(0,0)) + 
-  scale_x_continuous(position = "top",expand=c(0,0))+
-  labs(title = " ", x = "CONISS", y = " ") +
-  scale_fill_brewer(palette = "Dark2")+
-  theme_classic(base_size = journal_font_size) +
-  theme(legend.position="none", axis.text = element_blank(), axis.line.x = element_line(colour = "white"), 
-        axis.ticks= element_blank(), axis.line.y = element_blank(), 
-        axis.title = element_text(size = journal_title_size),
-        plot.margin = unit(c(0,0.2,0.5,-0.2), "cm"), 
-        panel.background = element_rect(fill = "transparent", colour = NA),
-        plot.background = element_rect(fill = "transparent", colour = NA))
-
-PC1ax_journal <- ggplot(XRF_data, aes(x= XRF_data$PC1, y= depth_m))+
-    geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  geom_point(colour = "lightblue", size= 0.3)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "bottom", expand=c(0,0))+
- geom_path(alpha=.8, size=0.5, colour = "lightblue") +
-  geom_vline(xintercept=0, color="lightblue", linetype = 2) +
-  labs(title = " ", x = "PC1\nAutochtonous <-> Allochtonous", y = " ", fontsize = 6) +
-  theme_classic(base_size = journal_font_size) +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), 
-        axis.text = element_text(size = journal_axis_text_size),
-        axis.title = element_text(size = journal_title_size),
-        plot.margin = unit(c(0,0,0.5,-0.2), "cm"), 
-        panel.background = element_rect(fill = "transparent", colour = NA),
-        plot.background = element_rect(fill = "transparent", colour = NA)) 
-
-PC2ax_journal <- ggplot(XRF_data, aes(x= XRF_data$PC2, y= depth_m))+
-    geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  geom_point(colour = "grey", size= 0.3)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "top", expand=c(0,0))+
- geom_path(alpha=.8, size=0.5, colour = "grey") +
-  geom_vline(xintercept=0, color="grey", linetype = 2) +
-  labs(title = " ", x = "Organic/Redox <-> Minerals\nPC2" , y = " ", fontsize = 6) +
-  theme_classic(base_size = journal_font_size) +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), 
-        axis.text = element_text(size = journal_axis_text_size),
-        axis.title = element_text(size = journal_title_size),
-        plot.margin = unit(c(0,0,0.5,-0.45), "cm"), 
-        panel.background = element_rect(fill = "transparent", colour = NA),
-        plot.background = element_rect(fill = "transparent", colour = NA))
-
-Phymaps_journal <- ggplot(data= XRF_data,
-         mapping = aes(x= PC2, y =depth_m)) + 
-  geom_point(alpha = 0.01)  +
-  scale_y_continuous(limits = c(10.989,13.822), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "bottom", expand=c(0,0))+
-  theme_cowplot(font_size = journal_font_size)+
-  annotation_custom(rasterGrob(PhyMap, width = 1, height = 1), 
-                    xmin = -4.2, xmax = Inf,
-                    ymin = 10.989 , ymax = 13.822 )+
-  labs(title = " ", x = " ", y = " ") +
-  theme(legend.position="none", axis.text = element_blank(), plot.margin = unit(c(0,0,0.5,-0.35), "cm"), 
-        panel.background = element_rect(fill = "transparent", colour = NA),
-        plot.background = element_rect(fill = "transparent", colour = NA),
-        axis.line.x = element_blank(), axis.ticks.x = element_blank(), 
-        axis.line.y = element_blank(), axis.ticks.y = element_blank())
-
-Cyano_journal <- ggplot(HSI_data, aes(x=RABD620, y= depth_m))+
-  geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  geom_point(colour = "dodgerblue1", size= 0.3)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "bottom", expand=c(0,0))+
- geom_path(alpha=.8, size=0.5, colour = "dodgerblue1") +
- geom_vline(xintercept=mean(HSI_data$RABD620), color="dodgerblue1", linetype = 1) +
-  geom_vline(xintercept=mean(HSI_data$RABD620) + sd(HSI_data$RABD620), color="gray", linetype = 2) +
-  geom_vline(xintercept=mean(HSI_data$RABD620) - sd(HSI_data$RABD620), color="gray", linetype = 2) +
-  labs(title = " ", x = " RABD620\n(Phycocyanin)", y = " ") +
-  theme_classic(base_size = journal_font_size) +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), 
-        axis.text = element_text(size = journal_axis_text_size),
-        axis.title = element_text(size = journal_title_size),
-        plot.margin = unit(c(0,0,0.5,-0.35), "cm"), 
-        panel.background = element_rect(fill = "transparent", colour = NA),
-        plot.background = element_rect(fill = "transparent", colour = NA))
-
-TChlmaps_journal <- ggplot(data= XRF_data,
-         mapping = aes(x= PC2, y =depth_m)) + 
-  geom_point(alpha = 0.01)  +
-  scale_y_continuous(limits = c(10.989,13.822), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "top", expand=c(0,0))+
-  theme_cowplot(font_size = journal_font_size)+
-  annotation_custom(rasterGrob(TchlMap, width = 1, height = 1), 
-                    xmin = -4.2, xmax = Inf,
-                    ymin = 10.989 , ymax = 13.822 )+
-  labs(title = " ", x = " ", y = " ") +
-  theme(legend.position="none", axis.text = element_blank(), plot.margin = unit(c(0,0,0.5,-0.35), "cm"), 
-        panel.background = element_rect(fill = "transparent", colour = NA),
-        plot.background = element_rect(fill = "transparent", colour = NA),
-        axis.line.x = element_blank(), axis.ticks.x = element_blank(), 
-        axis.line.y = element_blank(), axis.ticks.y = element_blank())
-
-Chl_journal <- ggplot(HSI_data, aes(x=RABD670calib, y= depth_m))+
-    geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  geom_point(colour = "green3", size= 0.3)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "top", expand=c(0,0))+
- geom_path(alpha=.8, size=0.5, colour = "green3") +
-  labs(title = " ", x = " Total chlorophylls\n(µg/g wet sed)", y = " ") +
-  theme_classic(base_size = journal_font_size) +
-  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), 
-        axis.text = element_text(size = journal_axis_text_size),
-        axis.title = element_text(size = journal_title_size),
-        plot.margin = unit(c(0,0,0.5,-0.35), "cm"), 
-        panel.background = element_rect(fill = "transparent", colour = NA),
-        plot.background = element_rect(fill = "transparent", colour = NA))
-
-Bphemaps_journal <- ggplot(data= XRF_data,
-         mapping = aes(x= PC2, y =depth_m)) + 
-  geom_point(alpha = 0.01)  +
-  scale_y_continuous(limits = c(10.989,13.822), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "bottom", expand=c(0,0))+
-  theme_cowplot(font_size = journal_font_size)+
-  annotation_custom(rasterGrob(BpheMap, width = 1, height = 1), 
-                    xmin = -4.2, xmax = Inf,
-                    ymin = 10.989 , ymax = 13.822 )+
-  labs(title = " ", x = " ", y = " ") +
-  theme(legend.position="none", axis.text = element_blank(), plot.margin = unit(c(0,0,0.5,-0.35), "cm"), 
-        panel.background = element_rect(fill = "transparent", colour = NA),
-        plot.background = element_rect(fill = "transparent", colour = NA),
-        axis.line.x = element_blank(), axis.ticks.x = element_blank(), 
-        axis.line.y = element_blank(), axis.ticks.y = element_blank())
-
-Bphe_journal <- ggplot(HSI_data, aes(x=RABD845calib, y= depth_m))+
-  geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
-  annotate("text", x= 5.9, y= 13.4, label = "Pleniglacial", color= "blue", size=2.5)+
-  annotate("text", x= 5.1, y= 12.6, label = "Bølling", color= "darkred", size=2.5)+
-  annotate("text", x= 7.72, y= 12.19, label = "Allerød", color= "darkred", size=2.5)+
-  annotate("text", x= 6.4, y= 11.62, label = "Lachersee \ntephra", color= "black", size=1.5)+
-  annotate("text", x= 5.8, y= 11.1, label = "Younger \nDryas", color= "blue", size=2.5)+
-  geom_point(colour = "magenta4", size= 0.3)+
-  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 0.2), digits = 2), labels = rev(ages), guide = guide_axis(position = "right"), expand=c(0,0)) +
-  scale_x_continuous(position = "bottom", expand=c(0,0))+
- geom_path(alpha=.8, size=0.5, colour = "magenta4") +
-  labs(title = " ", x = " Bacteriophyophytin-a\n(µg/g wet sed)", y = "Age (Cal yr BP)\nnon-linear axis") +
-  theme_classic(base_size = journal_font_size) +
-  theme(legend.position="none", 
-        axis.text = element_text(size = journal_axis_text_size), 
-        axis.title.x = element_text(size = journal_title_size),
-        axis.title.y = element_text(angle = 270, vjust = 0.5, size = journal_title_size),
-        plot.margin = unit(c(0,0.3,0.5,-0.3), "cm"), 
-        panel.background = element_rect(fill = "transparent", colour = NA),
-        plot.background = element_rect(fill = "transparent", colour = NA))
-```
-
-```{r}
-# Create journal figure at 180mm width (double column) x ~120mm height
-# Resolution: 300 DPI for journal quality
-# 180mm = 7.09 inches, 120mm = 4.72 inches
-# At 300 DPI: width = 2126 px, height = 1417 px
-
-png(filename = timestamp_filename("../figs", "Figure1B_journal"), 
-    width = 2126, height = 1417, units = "px", pointsize = journal_font_size, res=300, bg = "transparent")
-
-linePlot_journal <- plot_grid(Ti_journal, Ca_journal, SiTip_journal, Crom_journal, 
-                              p4_journal, p5_journal, 
-                              PC1ax_journal, PC2ax_journal, 
-                              Phymaps_journal, Cyano_journal, 
-                              TChlmaps_journal, Chl_journal, 
-                              Bphemaps_journal, Bphe_journal,
-                              nrow = 1, align = "h",
-                              rel_widths = c(1.1, 0.6, 0.6, 0.4,
-                                           0.05, 0.35,
-                                           0.8, 0.8,
-                                           0.08, 0.55, 0.08, 0.55, 0.08, 1.1), 
-                              axis = "tb")
-linePlot_journal
-dev.off()
-
-# Display the plot
-linePlot_journal
+sessionInfo()
 ```

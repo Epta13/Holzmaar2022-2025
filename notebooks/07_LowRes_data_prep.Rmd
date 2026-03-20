@@ -16,7 +16,21 @@ library("pacman")
 
 pacman::p_unload(pacman::p_loaded(), character.only = TRUE)
 
-pacman::p_load("readxl", "dplyr", "tidyr", "openxlsx", "FactoMineR", "cluster", "factoextra", "magrittr", "vegan", "ggplot2", "rioja", "psych", "dendroextras", "rcartocolor", "latex2exp", "ggsci", "ggpubr", "corrplot", "viridis", "cowplot", "ggrepel", "janitor", "pheatmap","scatterplot3d", "tidypaleo", "grid", "ggtext", "bruceR", "gapminder", "forcats", "ggthemes", "ggmap", "maps", "reshape2")
+pacman::p_load("readxl", "dplyr", "tidyr", "openxlsx", "FactoMineR", "cluster", "factoextra", "magrittr", "vegan", "ggplot2", "rioja", "psych", "dendroextras", "rcartocolor", "latex2exp", "ggsci", "ggpubr", "corrplot", "viridis", "cowplot", "ggrepel", "janitor","scatterplot3d", "tidypaleo", "grid", "ggtext", "bruceR", "gapminder", "forcats", "ggthemes", "ggmap", "maps", "reshape2", "pheatmap")
+
+# # Install BiocManager if you don't have it
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# 
+# # Install ComplexHeatmap
+# BiocManager::install("ComplexHeatmap")
+# 
+# # Also install circlize if needed
+# install.packages("circlize")
+# 
+# # Load the packages
+# library(ComplexHeatmap)
+# library(circlize)
 ```
 
 ```{r}
@@ -42,7 +56,7 @@ First we load the low resolution dataset, which contains of: TOC, TN, TC, TS, se
 The conversion can be also done on the bulk normalized pigment concentration by using the molecular weights in the Sheet "Pig conversion".
 
 ```{r}
-LR_all <- read_excel("../data/SourceData/LR_data.xlsx", sheet = "Redox_Dia_PigOMug")
+LR_all <- read_excel("../data/SourceData/HZM_lowres_redox_diatom_pigment.xlsx", sheet = "Redox_Dia_PigOMug")
 
 depth_LR <- select(LR_all, 1)
 age_LR <- select(LR_all, 3)
@@ -52,6 +66,7 @@ Pig_totals <- select(LR_all, 107:111)
 Redox <- select(LR_all, 8:19)
 Dia <- select(LR_all, 112:202)
 Dia_da <- select(LR_all, 1,3, 112:202, 204)
+PollenZone <- select(LR_all, 204)
 PolZ <- select(LR_all, 204)
 Dia_totals <- select(LR_all, 203)
 #LowRes_XRF_raw <- select(LowRes_all, 211:241)
@@ -104,6 +119,7 @@ remove_high_zero_columns <- function(data) {
 Pig_da.clean <- as.data.frame(remove_high_zero_columns(Pig_da.nan))
 
 Pig.clean <- select(Pig_da.clean, 3:22)
+write.xlsx(Pig.clean, "../data/Pig_clean.xlsx", rowNames = FALSE, col_type ="numeric")
 ```
 
 ## K-means clustering
@@ -800,7 +816,8 @@ Similarly to the MDS, we get information about the big difference of the Plenigl
 To best present the pigment data, we need to decrees their dimensionality. We tried to use PCA, where we saw groups of pigments representing the community composition, but to visualize these communities on a time axis, we opt for correlation based heat maps.
 
 ```{r}
-pig_prod <- read_excel("../data/SourceData/pig_prod.xlsx", sheet = "50%0")
+Pig.clean<- read_excel("../data/Pig_clean.xlsx")
+pig_prod <- read_excel("../data/SourceData/HZM_pigment_production.xlsx", sheet = "50%0")
 #heet = "90%0T")
 pig_prod_df <- as.data.frame(pig_prod)
 rownames(pig_prod_df) <- pig_prod_df[,2]
@@ -815,7 +832,7 @@ In case the scirpt starts here, we load all the data from the code above
 df_PC <- read.xlsx("../data/Pig_clustered_PC.xlsx")
 depth_m <- as.data.frame(df_PC$comp_depth_mm)
 
-df_PC <- df_PC%>% mutate(PZn = case_when(PolZ == "Pleniglacial" ~ "1",
+df_PC <- df_PC%>% mutate(PollenZone = case_when(PolZ == "Pleniglacial" ~ "1",
                            PolZ == "Bølling" ~ "2",
                            PolZ == "Allerød" ~ "3",
                            PolZ == "YoungerDryas" ~ "4")
@@ -833,67 +850,143 @@ annotation_col = pig_prod_df[2]
 
 ```{r}
 depth_mat <- as.data.frame(select(df_PC,1, 23, 2))
+age_mat <- as.data.frame(select(df_PC,2, 23, 1))
+colnames(age_mat)[2] <- "Pollen Zone"
 
 rownames(depth_mat) <- depth_mat[,1]
+rownames(age_mat) <- age_mat[,1]
 depth_mat <- depth_mat[,-1]
+age_mat <- age_mat[,-1]
 annotation_row = depth_mat[1]
+annotation_row_age = age_mat[1]
 ```
 
 ```{r}
 new_names <- alr_safe[,1]
+age_names <- alr_safe[,2]
 
 alr_mat <- as.matrix(alr_safe[,3:22])
+alr_mat_age <- as.matrix(alr_safe[,3:22])
+
 rownames(alr_mat) <- new_names
+rownames(alr_mat_age) <- age_names
 colnames(alr_mat) <- col_names
+colnames(alr_mat_age) <- col_names
 
 alr_scaled<- scale(alr_mat)
+alr_scaled_age <- scale(alr_mat_age)
 
 Pig.clean_ID <- as.matrix(Pig.clean)
+Pig.clean_ID_age <- as.matrix(Pig.clean)
 rownames(Pig.clean_ID) <- new_names
+rownames(Pig.clean_ID_age) <- age_names
 colnames(Pig.clean_ID) <- col_names
+colnames(Pig.clean_ID_age) <- col_names
 ```
 
 ```{r}
+# # Rename annotation columns to set legend titles
+# annotation_col_renamed <- annotation_col
+# colnames(annotation_col_renamed)[colnames(annotation_col_renamed) == "producer"] <- "Producer"
+# 
+# annotation_row_renamed <- annotation_row
+# colnames(annotation_row_renamed)[colnames(annotation_row_renamed) == "PZn"] <- "Pollen Zone"
+
 ann_colors = list(
-   producer = c(Cryptophytes = "darkorange3", Cyanobacteria ="royalblue2", `Green algae` = "green4", `Green sulphur bacteria` = "greenyellow", `Purple non-sulphur bacteria`= "orchid2", `Purple sulphur bacteria` = "purple2", `Red blooming algae` = "red4", Silicifiers= "lightskyblue"),
+   Producer = c(Cryptophytes = "darkorange3", Cyanobacteria ="royalblue2", `Green algae` = "green4", `Green sulphur bacteria` = "greenyellow", `Purple non-sulphur bacteria`= "orchid2", `Purple sulphur bacteria` = "purple2", `Red blooming algae` = "red4", Silicifiers= "lightskyblue"),
     PolZ = c(Pleniglacial = "dodgerblue", Bølling = "tomato2", Allerød = "tomato4", `YoungerDryas` = "deepskyblue")) #`Lachersee tephra` = "gray29"
   #  GeneClass = c(Path1 = "#7570B3", Path2 = "#E7298A", Path3 = "#66A61E")
 # , 
 
+
+
 #Both dimension clustering
 #png(filename = "~/work/holzmaar/figs/heatmap_corr_clustered_50_3percent.png", width = 1200, height = 1000, units = "px", pointsize = 18)
-pheatmap(alr_scaled, show_rownames=T,show_colnames=T,
-         annotation_col= annotation_col, annotation_row = annotation_row,
-         annotation_colors = ann_colors,
-         scale = "none",clustering_method="ward.D2", #cluster_rows = F,
-         clustering_distance_cols="correlation", clustering_distance_rows = "euclidean",
-         cutree_rows = 3,
-         cutree_cols = 4, treeheight_row = 50,
-         treeheight_col = 50, color = colorRampPalette(c("lightskyblue1","darkseagreen1","lightgreen","yellow", "orange", "red", "purple"))(15))
-#dev.off()
+# pheatmap(alr_scaled, show_rownames=T,show_colnames=T,
+#          annotation_col= annotation_col, annotation_row = annotation_row,
+#          annotation_colors = ann_colors,
+#          scale = "none",clustering_method="ward.D2", #cluster_rows = F,
+#          clustering_distance_cols="correlation", clustering_distance_rows = "euclidean",
+#          cutree_rows = 3,
+#          cutree_cols = 4, treeheight_row = 50,
+#          treeheight_col = 50, color = colorRampPalette(c("lightskyblue1","darkseagreen1","lightgreen","yellow", "orange", "red", "purple"))(15))
+# #dev.off()
 
 
 # Only pigment clustering
 
-obj <- pheatmap(alr_scaled, show_rownames=T,show_colnames=T,
-         annotation_col=annotation_col, annotation_row = annotation_row,
-         annotation_colors = ann_colors,
-         fontsize = 24,
-         fontsize_row = 10,
-        #cellheight = 8, cellwidth = 20,
-         scale = "none", #clustering_method="ward.D2",
-         cluster_rows = F,
-         clustering_distance_cols="euclidean", #clustering_distance_rows = "euclidean",
-        # cutree_rows = 5,
-         cutree_cols = 3, #treeheight_row = 50,
-         treeheight_col = 50, color = colorRampPalette(c("lightskyblue1","darkseagreen1","lightgreen","yellow", "orange", "red", "purple"))(15))
+obj <- pheatmap(alr_scaled, 
+                show_rownames=T,
+                show_colnames=T,
+                annotation_col=annotation_col, 
+                annotation_row = annotation_row,
+                annotation_colors = ann_colors,
+                fontsize = 20,
+                fontsize_row = 10,
+                #cellheight = 8, cellwidth = 20,
+                scale = "none", #clustering_method="ward.D2",
+                cluster_rows = F,
+                clustering_distance_cols="euclidean", #clustering_distance_rows = "euclidean",
+                #cellwidth = 40,   # Width of cells in pixels
+                #cellheight = 8,   # Height of cells in pixels
+                # cutree_rows = 5,
+                cutree_cols = 3, #treeheight_row = 50,
+                treeheight_col = 50,
+                #legend = TRUE,  # Show the heatmap legend
+                #legend_breaks = NA,  # Auto breaks
+                #legend_labels = NA,  # Auto labels
+                #main = NA,  # Remove main title to eliminate "matrix_1"
+                color = colorRampPalette(c("lightskyblue1","darkseagreen1","lightgreen",
+                                     "yellow", "orange", "red", "purple"))(15))
+                # color = colorRampPalette(c("lightskyblue1","darkseagreen1","lightgreen","yellow", "orange", "red", "purple"))(15))
 
 png(filename = timestamp_filename("../figs", "SuppFigure3_heatmap_corr_50_3percent"), width = 1600, height = 1000, units = "px", pointsize = 24)
 obj
 dev.off()
 
+```
 
+```{r}
+row_labels_display <- round(as.numeric(rownames(alr_scaled_age)), 0)
 
+ann_colors = list(
+   Producer = c(Cryptophytes = "darkorange3", Cyanobacteria ="royalblue2", `Green algae` = "green4", `Green sulphur bacteria` = "greenyellow", `Purple non-sulphur bacteria`= "orchid2", `Purple sulphur bacteria` = "purple2", `Red blooming algae` = "red4", Silicifiers= "lightskyblue"),
+    `Pollen Zone` = c(Pleniglacial = "dodgerblue", Bølling = "tomato2", Allerød = "tomato4", `YoungerDryas` = "deepskyblue")) #`Lachersee tephra` = "gray29"
+  #  GeneClass = c(Path1 = "#7570B3", Path2 = "#E7298A", Path3 = "#66A61E")
+# , 
+
+obj2 <- pheatmap(alr_scaled_age, 
+                show_rownames=T,
+                show_colnames=T,
+                annotation_col=annotation_col, 
+                annotation_row = annotation_row_age,
+                annotation_colors = ann_colors,
+                fontsize = 20,
+                fontsize_row = 10,
+                labels_row = row_labels_display,
+                annotation_names_col = FALSE,  # Hide column annotation name
+                annotation_names_row = TRUE,   # Keep row annotation name (optional)
+                #cellheight = 8, cellwidth = 20,
+                scale = "none", #clustering_method="ward.D2",
+                cluster_rows = F,
+                clustering_distance_cols="euclidean", #clustering_distance_rows = "euclidean",
+                cellwidth = 50,   # Width of cells in pixels
+                cellheight = 8,   # Height of cells in pixels
+                # cutree_rows = 5,
+                cutree_cols = 3, #treeheight_row = 50,
+                treeheight_col = 50,
+                angle_col = 315,
+                #legend = TRUE,  # Show the heatmap legend
+                #legend_breaks = NA,  # Auto breaks
+                #legend_labels = NA,  # Auto labels
+                #main = NA,  # Remove main title to eliminate "matrix_1"
+                color = colorRampPalette(c("lightskyblue1","darkseagreen1","lightgreen",
+                                     "yellow", "orange", "red", "purple"))(15))
+                # color = colorRampPalette(c("lightskyblue1","darkseagreen1","lightgreen","yellow", "orange", "red", "purple"))(15))
+
+png(filename = timestamp_filename("../figs", "SuppFigure3_heatmap_corr_50_3percent_age"), width = 1600, height = 1000, units = "px", pointsize = 24)
+obj2
+dev.off()
 ```
 
 Extract the clusters, make mean curve and use for a line plot
@@ -1656,7 +1749,7 @@ dev.off()
 Load the diatom counts data and convert it to count%. Filter out all the columns/diatom species which have below 3% op counts.
 
 ```{r}
-DiatL <- read_excel("../data/SourceData/diatoms_Lujan.xlsx") 
+DiatL <- read_excel("../data/SourceData/HZM_diatom_assemblages.xlsx") 
 
 #Conversion of counts to %
 diaL_perc <- adorn_percentages(DiatL, denominator = "row", na.rm = TRUE, 4:94) #na.rm = TRUE,
@@ -1681,7 +1774,7 @@ write.xlsx(filtered_diaL, "../data/diatom_filtered.xlsx", rowNames = FALSE)
 Load the diatom names
 
 ```{r}
-DiaN <- read_excel("../data/SourceData/diatoms_Lujan.xlsx", sheet = "diatoms_name") #names <- as.list(DiaN[,1])
+DiaN <- read_excel("../data/SourceData/HZM_diatom_assemblages.xlsx", sheet = "diatoms_name") #names <- as.list(DiaN[,1])
 ```
 
 ```{r}
@@ -1707,7 +1800,7 @@ annotation_colA = df_names[1]
 ```
 
 ```{r}
-PolZD <- read_excel("../data/SourceData/diatoms_Lujan.xlsx", sheet = "PolZ") 
+PolZD <- read_excel("../data/SourceData/HZM_diatom_assemblages.xlsx", sheet = "PolZ") 
 #depth_mat <- as.data.frame(PolZD) 
 age_mat <- as.data.frame(PolZD) 
 #rownames(depth_mat) <- depth_mat[,1] 
@@ -1715,6 +1808,7 @@ rownames(age_mat) <- age_mat[,2]
 #depth_mat <- depth_mat[,-1] 
 #annotation_rowD = depth_mat[3]
 annotation_rowA = age_mat[3]
+colnames(annotation_rowA) <- "PolZ"
 ```
 
 ```{r}
@@ -1766,7 +1860,7 @@ dfD_scaled<- scale(df)
 ### Heatmaps
 
 ```{r}
-ann_colorsD = list( group = c(`benthic+epiphytic` = "darkorange3", planktonic ="royalblue2"), PolZD = c(`Pleniglacial` = "dodgerblue", `Bølling` = "tomato2", `Allerød` = "tomato4")) 
+ann_colorsD = list(group = c(`benthic+epiphytic` = "darkorange3", planktonic ="royalblue2"), PolZ = c(`Pleniglacial` = "dodgerblue", `Bølling` = "tomato2", `Allerød` = "tomato4")) 
 
 #Both dimension clustering 
 png(filename = timestamp_filename("../figs", "diatoms_heat"), width = 1200, height = 1000, units = "px", pointsize = 14, res=120)
@@ -1774,6 +1868,13 @@ png(filename = timestamp_filename("../figs", "diatoms_heat"), width = 1200, heig
 pheatmap(dfD_scaled, show_rownames=T,show_colnames=T, 
          annotation_col=annotation_colA, annotation_row = annotation_rowA, 
          annotation_colors = ann_colorsD, 
+         fontsize = 20,
+         fontsize_row = 10,
+         annotation_names_col = FALSE,
+         annotation_names_row = TRUE,
+         angle_col = 315,
+         cellwidth = 50,
+         cellheight = 8,
          scale = "none",clustering_method="ward.D2", #cluster_rows = F, 
          clustering_distance_cols="correlation", clustering_distance_rows = "euclidean",
          cutree_rows = 3, 
@@ -1786,8 +1887,16 @@ dev.off()
 png(filename = timestamp_filename("../figs", "diatoms_heat_corr"), width = 1200, height = 1000, units = "px", pointsize = 14, res=120)
 
 pheatmap(dfD_scaled, show_rownames=T,show_colnames=T, 
-         annotation_col=annotation_colA, annotation_row = annotation_rowA, 
+         annotation_col=annotation_colA, 
+         annotation_row = annotation_rowA, 
          annotation_colors = ann_colorsD, 
+         fontsize = 20,
+         fontsize_row = 10,
+         annotation_names_col = FALSE,
+         annotation_names_row = TRUE,
+         angle_col = 315,
+         cellwidth = 50,
+         cellheight = 8,
          scale = "none",clustering_method="ward.D2", cluster_rows = F, 
          clustering_distance_cols="correlation", #clustering_distance_rows = "euclidean", # cutree_rows = 5, 
          cutree_cols = 3, #treeheight_row = 50, 
@@ -2103,11 +2212,11 @@ journal_title_size <- 5.5
 
 # Recreate HSI plots with journal formatting
 RABD620_j <- ggplot()+
-  geom_vline(xintercept=mean(HSI_data$RABD620), color="dodgerblue1", linetype = 1) +
-  geom_vline(xintercept=mean(HSI_data$RABD620) + sd(HSI_data$RABD620), color="gray", linetype = 2) +
-  geom_vline(xintercept=mean(HSI_data$RABD620) - sd(HSI_data$RABD620), color="gray", linetype = 2) +
-  geom_point(data= HSI_data, aes(y=mean_VT22, x= RABD620), colour = "dodgerblue1", size= 0.3)+
-  geom_path(data = HSI_data, aes(y=mean_VT22, x= RABD620), alpha=.8, size=0.8, colour = "dodgerblue1") +
+  geom_vline(xintercept=mean(HSI_data$RABD620), color="dodgerblue1", linetype = 1,linewidth=0.2) +
+  geom_vline(xintercept=mean(HSI_data$RABD620) + sd(HSI_data$RABD620), color="gray", linetype = 2, linewidth=0.2) +
+  geom_vline(xintercept=mean(HSI_data$RABD620) - sd(HSI_data$RABD620), color="gray", linetype = 2,linewidth=0.2) +
+ # geom_point(data= HSI_data, aes(y=mean_VT22, x= RABD620), colour = "dodgerblue1", size= 0.3)+
+  geom_path(data = HSI_data, aes(y=mean_VT22, x= RABD620), alpha=1, size=0.3, colour = "dodgerblue1") +
   scale_y_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
   scale_x_continuous(position = "bottom", expand=c(0,0), breaks = c(1, 1.02))+
   labs(title = " ", x = "RABD620\n(Phycocyanin)", y = "Age (Cal yr BP)")+
@@ -2121,12 +2230,13 @@ RABD620_j <- ggplot()+
         plot.background = element_blank())
 
 RABD660_j <- ggplot()+
-  geom_point(data= HSI_data, aes(y=mean_VT22, x= RABD670calib), colour = "limegreen", size= 0.3)+
-  geom_path(data = HSI_data, aes(y=mean_VT22, x= RABD670calib), alpha=.8, size=0.8, colour = "limegreen") +
+ # geom_point(data= HSI_data, aes(y=mean_VT22, x= RABD670calib), colour = "limegreen", size= 0.3)+
+  geom_path(data = HSI_data, aes(y=mean_VT22, x= RABD670calib), alpha=1, size=0.3, colour = "limegreen") +
   scale_y_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
   scale_x_continuous(position = "top", expand=c(0,0), breaks = c(0,20,40))+
   labs(title = " ", x = "Total Chls\n(µg/g wet sed)", y = " ") +
   theme_classic(base_size = journal_font_size) +
+  geom_vline(xintercept=4, color="forestgreen", linetype = 1, linewidth=0.2, alpha = 0.9) +
   theme(legend.position="none", 
         axis.title.x.top = element_text(color = "limegreen", size = journal_title_size, face="bold"), 
         axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),
@@ -2136,11 +2246,12 @@ RABD660_j <- ggplot()+
         plot.background = element_blank())
 
 RABD845_j <- ggplot()+
-  geom_point(data= HSI_data, aes(y=mean_VT22, x= RABD845calib), colour = "violet", size= 0.3)+
-  geom_path(data = HSI_data, aes(y=mean_VT22, x= RABD845calib), alpha=.8, size=0.8, colour = "violet") +
+ # geom_point(data= HSI_data, aes(y=mean_VT22, x= RABD845calib), colour = "violet", size= 0.3)+
+  geom_path(data = HSI_data, aes(y=mean_VT22, x= RABD845calib), alpha=1, size=0.3, colour = "violet") +
   scale_y_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), guide = guide_axis(position = "left"), expand=c(0,0)) +
   scale_x_continuous(position = "bottom", expand=c(0,0), n.breaks = 3)+
-  labs(title = " ", x = "Bacteriopheophytin a\n(µg/g wet sed)", y = " ") +
+  labs(title = " ", x = "Bacteriopheophytine a\n(µg/g wet sed)", y = " ") +
+  geom_vline(xintercept=1.4, color="purple", linetype = 1, linewidth=0.2, alpha = 0.9) +
   theme_classic(base_size = journal_font_size) +
   theme(legend.position="none", 
         axis.title.x.bottom = element_text(color = "violet", size = journal_title_size, face="bold"), 
@@ -2221,7 +2332,7 @@ Fuco_j <- ggplot()+
 
 # Recreate PCA component plots with journal formatting using alr_scaled_clust
 PigCom1_j <- ggplot()+
-  geom_path(data = alr_scaled_clust, aes(x=age, y= C1), alpha=1, size=0.8, colour = "royalblue1") +
+  geom_path(data = alr_scaled_clust, aes(x=age, y= C1), alpha=1, size=0.3, colour = "royalblue1") +
   scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), 
                   guide = guide_axis(position = "right"), expand=c(0,0)) +
   scale_y_continuous(position = "right", expand=c(0,0), n.breaks = 5)+
@@ -2237,7 +2348,7 @@ PigCom1_j <- ggplot()+
   coord_flip()
 
 PigCom3_j <- ggplot()+
-  geom_path(data = alr_scaled_clust, aes(x=age, y= C3), alpha=1, size=0.8, colour = "royalblue3") +
+  geom_path(data = alr_scaled_clust, aes(x=age, y= C3), alpha=1, size=0.3, colour = "royalblue3") +
   scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), 
                   guide = guide_axis(position = "left"), expand=c(0,0)) +
   scale_y_continuous(position = "left", expand=c(0,0), n.breaks = 3)+
@@ -2253,7 +2364,7 @@ PigCom3_j <- ggplot()+
   coord_flip()
 
 PigCom2_j <- ggplot()+
-  geom_path(data = alr_scaled_clust, aes(x=age, y= C2), alpha=1, size=0.8, colour = "royalblue4") +
+  geom_path(data = alr_scaled_clust, aes(x=age, y= C2), alpha=1, size=0.3, colour = "royalblue4") +
   scale_x_reverse(limits = c(limYmax, limYmin), breaks = round(seq(limYmin, limYmax, by = 500), digits = 2), 
                   guide = guide_axis(position = "right"), expand=c(0,0)) +
   scale_y_continuous(position = "right", expand=c(0,0), n.breaks = 3)+
@@ -2420,7 +2531,11 @@ Juniperus_j <- ggplot(Trees , aes(y= Trees$Juniperus, x= age))+
 zones_strip_j <- ggplot() +
   annotate("rect", ymin = 0, ymax = 0.8, xmin = 15342, xmax = 14444, 
            fill = "lightblue", color = "black", size = 0.2) +  # Pleniglacial
-  annotate("text", y = 0.4, x = (15342 + 14444)/2, label = "Pleniglacial", 
+  # annotate("text", y = 0.4, x = (15342 + 14444)/2, label = "\n ", 
+  #          size = 2, angle = 270, hjust = 0.5) +
+  annotate("text", y = 0.55, x = (15342 + 14444)/2, label = "Pleniglacial/", 
+           size = 2, angle = 270, hjust = 0.5) +
+  annotate("text", y = 0.25, x = (15342 + 14444)/2, label = "Oldest Dryas", 
            size = 2, angle = 270, hjust = 0.5) +
   
   annotate("rect", ymin = 0, ymax = 0.8, xmin = 14444, xmax = 13611, 
@@ -2428,15 +2543,15 @@ zones_strip_j <- ggplot() +
   annotate("text", y = 0.4, x = (14444 + 13611)/2, label = "Bølling", 
            size = 2, angle = 270, hjust = 0.5) +
   
-  annotate("rect", ymin = 0, ymax = 0.8, xmin = 14070 , xmax = 14016, 
-           fill = "white", color = "black", size = 0.2, alpha = 0.2) +  # Oldest Dryas
-  annotate("text", y = 0.4, x = ((14070 + 14016)/2)-20, label = "Oldest\nDryas", 
-           size = 1, angle = 0, hjust = 0.5) +
+  # annotate("rect", ymin = 0, ymax = 0.8, xmin = 14070 , xmax = 14016, 
+  #          fill = "white", color = "black", size = 0.2, alpha = 0.2) +  # Oldest Dryas
+  # annotate("text", y = 0.4, x = ((14070 + 14016)/2)-20, label = "Oldest\nDryas", 
+  #          size = 1, angle = 0, hjust = 0.5) +
   
-  annotate("rect", ymin = 0, ymax = 0.8, xmin = 13906, xmax = 13611, 
-           fill = "white", color = "black", size = 0.2, alpha = 0.2) +  # Older Dryas
-  annotate("text", y = 0.4, x = (13906 + 13611)/2, label = "Older\nDryas", 
-           size = 1, angle = 0, hjust = 0.5) +
+  # annotate("rect", ymin = 0, ymax = 0.8, xmin = 13906, xmax = 13611, 
+  #          fill = "white", color = "black", size = 0.2, alpha = 0.2) +  # Older Dryas
+  # annotate("text", y = 0.4, x = (13906 + 13611)/2, label = "Older\nDryas", 
+  #          size = 1, angle = 0, hjust = 0.5) +
   
   annotate("rect", ymin = 0, ymax = 0.8, xmin = 13611, xmax = 12727, 
            fill = "lightsalmon", color = "black", size = 0.2) +  # Allerød
@@ -2528,13 +2643,13 @@ Fig2_journal <- ggdraw(base_grid) +
   # Pleniglacial boundary
   # draw_line(x = c(0.03, 0.975), y = c(zone_y_adj[1], zone_y_adj[1]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
   # Meiendorf boundary
-  draw_line(x = c(0.05, 0.97), y = c(zone_y_adj[2], zone_y_adj[2]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
+ draw_line(x = c(0.05, 0.97), y = c(zone_y_adj[2], zone_y_adj[2]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
   # Oldest Dryas boundary
-  draw_line(x = c(0.05, 0.97), y = c(zone_y_adj[3], zone_y_adj[3]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
+  #draw_line(x = c(0.05, 0.97), y = c(zone_y_adj[3], zone_y_adj[3]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
   # Bølling boundary  
-  draw_line(x = c(0.05, 0.97), y = c(zone_y_adj[4], zone_y_adj[4]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
+ # draw_line(x = c(0.05, 0.97), y = c(zone_y_adj[4], zone_y_adj[4]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
   #  # Older Drays boundary  
-  draw_line(x = c(0.05, 0.97), y = c(zone_y_adj[5], zone_y_adj[5]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
+ # draw_line(x = c(0.05, 0.97), y = c(zone_y_adj[5], zone_y_adj[5]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
   # Allerød boundary
   draw_line(x = c(0.05, 0.97), y = c(zone_y_adj[6], zone_y_adj[6]), color = "black", size = 0.3, linetype = "dashed", alpha = 0.8) +
   # Younger Dryas boundary

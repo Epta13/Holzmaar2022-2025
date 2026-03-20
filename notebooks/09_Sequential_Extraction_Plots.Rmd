@@ -1,0 +1,242 @@
+---
+title: "Sequential Extraction Plots - Fe, Mn, P Fractionation"
+output:
+  html_notebook:
+    toc: true
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Overview
+
+## Purpose
+Visualize sequential extraction results for redox-sensitive elements (Fe, Mn, P). Create stacked bar plots showing fraction distribution (F1: exchangeable, F2: Fe/Mn carbonate, F3: Fe/Mn oxides, F4: organic) and generate molar ratios to assess redox conditions.
+
+## Processing Steps
+1. Load sequential extraction dataset with element fractions
+2. Prepare absolute concentration data for element speciation
+3. Calculate percentage distributions across fractions
+4. Create 100% stacked bar plots for each element
+5. Calculate Fe/P molar ratios (indicator of redox state)
+6. Overlay sediment pigment proxies (Okenone, bacteriopheophytin)
+7. Generate combined publication figures
+
+## Input Files
+- ../data/SourceData/Sequential_Extraction.xlsx
+- ../data/HZM_HR_cleaned.xlsx (HSI pigment data)
+
+## Output Files
+- ../figs/Fe_sequential_extraction_*.png
+- ../figs/Mn_sequential_extraction_*.png
+- ../figs/P_sequential_extraction_*.png
+- ../figs/Fe_P_molar_ratio_*.png
+- ../figs/Combined_redox_*.png
+
+# Setup and Library Loading
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(pacman)
+pacman::p_load(readxl, dplyr, tidyr, openxlsx, ggplot2, cowplot, viridis, ggpubr, reshape2)
+
+cat("Libraries loaded for sequential extraction analysis.\n")
+```
+
+# Helper Functions
+
+```{r}
+timestamp_filename <- function(base_path, filename_prefix, extension = ".png") {
+  timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  file.path(base_path, paste0(filename_prefix, "_", timestamp, extension))
+}
+
+cat("Helper functions defined.\n")
+```
+
+# Load Data
+
+```{r}
+se_data <- read_excel("../data/SourceData/Sequential_Extraction.xlsx", col_types = "numeric")
+hsi_data <- read_excel("../data/HZM_HR_cleaned.xlsx", col_types = "numeric")
+
+cat("Sequential extraction data loaded: ", nrow(se_data), " samples\n", sep="")
+cat("HSI pigment data loaded: ", nrow(hsi_data), " measurements\n", sep="")
+```
+
+# Prepare Element Fractionation Data
+
+Sequential extraction fractions: F1 (exchangeable), F2 (carbonate), F3 (Fe/Mn oxides), F4 (organic/residual).
+
+```{r}
+extract_fractions <- function(se_data, element) {
+  f1_col <- paste0(element, "_F1")
+  f2_col <- paste0(element, "_F2")
+  f3_col <- paste0(element, "_F3")
+  f4_col <- paste0(element, "_F4")
+  
+  fractions <- data.frame(
+    F1_exch = se_data[[f1_col]],
+    F2_carb = se_data[[f2_col]],
+    F3_oxide = se_data[[f3_col]],
+    F4_org = se_data[[f4_col]]
+  )
+  
+  fractions$Total <- rowSums(fractions, na.rm = TRUE)
+  fractions$Pct_F1 <- 100 * fractions$F1_exch / fractions$Total
+  fractions$Pct_F2 <- 100 * fractions$F2_carb / fractions$Total
+  fractions$Pct_F3 <- 100 * fractions$F3_oxide / fractions$Total
+  fractions$Pct_F4 <- 100 * fractions$F4_org / fractions$Total
+  
+  return(fractions)
+}
+
+Fe_frac <- extract_fractions(se_data, "Fe")
+Mn_frac <- extract_fractions(se_data, "Mn")
+P_frac <- extract_fractions(se_data, "P")
+
+cat("✓ Sequential fractions extracted:\n")
+cat("  Fe: total μmol/g = ", round(mean(Fe_frac$Total, na.rm = TRUE), 2), "\n", sep="")
+cat("  Mn: total μmol/g = ", round(mean(Mn_frac$Total, na.rm = TRUE), 2), "\n", sep="")
+cat("  P:  total μmol/g = ", round(mean(P_frac$Total, na.rm = TRUE), 2), "\n", sep="")
+```
+
+# Create 100% Stacked Bar Plots
+
+```{r}
+create_stacked_plot <- function(fractions, element_name, depth_m) {
+  plot_data <- data.frame(
+    depth = depth_m,
+    F1_exch = fractions$Pct_F1,
+    F2_carb = fractions$Pct_F2,
+    F3_oxide = fractions$Pct_F3,
+    F4_org = fractions$Pct_F4
+  )
+  
+  plot_data_long <- plot_data %>%
+    pivot_longer(cols = -depth, names_to = "Fraction", values_to = "Percentage") %>%
+    mutate(Fraction = factor(Fraction, levels = c("F1_exch", "F2_carb", "F3_oxide", "F4_org"),
+                              labels = c("F1: Exchangeable", "F2: Carbonate", 
+                                        "F3: Fe/Mn Oxide", "F4: Organic")))
+  
+  p <- ggplot(plot_data_long, aes(x = depth, y = Percentage, fill = Fraction)) +
+    geom_bar(stat = "identity", width = 0.8) +
+    scale_y_continuous(name = "Percentage (%)", limits = c(0, 100)) +
+    scale_x_reverse(name = "Depth (m)") +
+    scale_fill_viridis_d(option = "H") +
+    labs(title = paste0(element_name, " Sequential Extraction - 100% Stacked")) +
+    theme_minimal() +
+    theme(
+      axis.text = element_text(size = 9),
+      plot.title = element_text(size = 11, face = "bold"),
+      legend.position = "bottom"
+    )
+  
+  return(p)
+}
+
+depth_m <- se_data$Depth_mm / 1000
+
+p_Fe_stacked <- create_stacked_plot(Fe_frac, "Iron (Fe)", depth_m)
+p_Mn_stacked <- create_stacked_plot(Mn_frac, "Manganese (Mn)", depth_m)
+p_P_stacked <- create_stacked_plot(P_frac, "Phosphorus (P)", depth_m)
+
+cat("✓ 100% stacked bar plots created for Fe, Mn, P\n")
+```
+
+# Calculate Fe/P Molar Ratio
+
+Fe/P molar ratio indicates redox state: elevated ratios suggest oxidizing conditions.
+
+```{r}
+fe_p_ratio <- data.frame(
+  depth = depth_m,
+  Fe_P_molar = Fe_frac$Total / P_frac$Total,
+  Fe_P_F2 = Fe_frac$F2_carb / P_frac$F2_carb,
+  Fe_P_F3 = Fe_frac$F3_oxide / P_frac$F3_oxide
+)
+
+p_Fe_P <- ggplot(fe_p_ratio, aes(x = Fe_P_molar, y = depth)) +
+  geom_path(color = "darkred", size = 0.5) +
+  geom_point(size = 1.5, color = "darkred", alpha = 0.6) +
+  scale_y_reverse(name = "Depth (m)") +
+  scale_x_continuous(name = "Fe/P Molar Ratio") +
+  labs(title = "Redox State Indicator - Fe/P Molar Ratio",
+       subtitle = "Higher values indicate more oxidizing conditions") +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 9),
+    plot.title = element_text(size = 11, face = "bold")
+  )
+
+cat("✓ Fe/P molar ratio plot created\n")
+```
+
+# Combine with Pigment Proxy Data
+
+```{r}
+hsi_redox <- data.frame(
+  depth = hsi_data$depth_VT22 / 1000,
+  Okenone = if ("Okenone" %in% names(hsi_data)) hsi_data$Okenone else NA,
+  Bphe = if ("Bphe_calibrated" %in% names(hsi_data)) hsi_data$Bphe_calibrated else NA
+)
+
+p_combined <- ggplot() +
+  geom_path(data = hsi_redox, aes(x = Bphe, y = depth, color = "Bacteriopheophytin"), 
+            size = 0.6) +
+  geom_path(data = fe_p_ratio, aes(x = Fe_P_molar, y = depth, color = "Fe/P Ratio"),
+            size = 0.6) +
+  scale_y_reverse(name = "Depth (m)") +
+  scale_x_continuous(name = "Normalized Value (scaled)") +
+  scale_color_manual(values = c("Bacteriopheophytin" = "purple", "Fe/P Ratio" = "darkred")) +
+  labs(title = "Combined Redox Indicators",
+       subtitle = "Bacteriopheophytin (organic sedimentation) and Fe/P ratio (redox state)") +
+  theme_minimal() +
+  theme(
+    axis.text = element_text(size = 9),
+    plot.title = element_text(size = 11, face = "bold"),
+    legend.position = "right"
+  )
+
+cat("✓ Combined redox indicator plot created\n")
+```
+
+# Export Sequential Extraction Plots
+
+```{r}
+png(filename = timestamp_filename("../figs", "Fe_sequential_extraction"),
+    width = 800, height = 600, units = "px", res = 300, pointsize = 12)
+print(p_Fe_stacked)
+dev.off()
+
+png(filename = timestamp_filename("../figs", "Mn_sequential_extraction"),
+    width = 800, height = 600, units = "px", res = 300, pointsize = 12)
+print(p_Mn_stacked)
+dev.off()
+
+png(filename = timestamp_filename("../figs", "P_sequential_extraction"),
+    width = 800, height = 600, units = "px", res = 300, pointsize = 12)
+print(p_P_stacked)
+dev.off()
+
+png(filename = timestamp_filename("../figs", "Fe_P_molar_ratio"),
+    width = 800, height = 600, units = "px", res = 300, pointsize = 12)
+print(p_Fe_P)
+dev.off()
+
+png(filename = timestamp_filename("../figs", "Combined_redox"),
+    width = 1000, height = 600, units = "px", res = 300, pointsize = 12)
+print(p_combined)
+dev.off()
+
+cat("✓ All sequential extraction plots exported: ../figs/\n")
+cat("  - Fe_sequential_extraction_*.png\n")
+cat("  - Mn_sequential_extraction_*.png\n")
+cat("  - P_sequential_extraction_*.png\n")
+cat("  - Fe_P_molar_ratio_*.png\n")
+cat("  - Combined_redox_*.png\n")
+```
+
+# Session Information
+
+```{r}
+sessionInfo()
+```
