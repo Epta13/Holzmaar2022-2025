@@ -56,3 +56,43 @@ workflows/
 
 # Image files (generally regenerated)
 *.png
+
+# Legacy and testing files (development only)
+_legacy_scripts/
+_legacy/
+test*.R
+test*.py
+TEST*.R
+*TEST*.R
+EXECUTE*.R
+
+# Notebook execution test results and logs
+*EXECUTION_LOG*
+*TEST_LOG*
+*TEST_RESULTS*
+*TEST_REPORT*
+NOTEBOOK_EXECUTION_TEST_REPORT*
+COMPREHENSIVE_TEST_LOG*
+
+# Draft methods and working documents
+*METHODS*.txt
+METHODS_UPDATED.txt
+MANUSCRIPT_METHODS_RDA.txt
+
+# Internal documentation and working guides
+RDA_QUALITY_ASSESSMENT.md
+QUICK_REFERENCE.md
+
+# Generated outputs and large folders
+figs/
+notebooks_cleaned/
+NOTEBOOK_EXECUTION_RESULTS.csv
+
+# Working notes and paper manuscript
+EXTERNAL_TEMP_INTEGRATION_NOTES.md
+Zahajska*.pdf
+
+# Internal documentation and audit files
+NOTEBOOKS_ANALYSIS.md
+NOTEBOOK_REVIEW_AUDIT.md
+DATA_MANIFEST.md
