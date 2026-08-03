@@ -54,6 +54,12 @@ data/*.xlsx
 data/fig/
 data/SourceData/External/csvs/old/
 
+# Map folder working/troubleshooting files
+data/SourceData/Map/ELEVATION_DATA_*
+data/SourceData/Map/DEM_ACQUISITION_ROBUST.R
+data/SourceData/Map/QUICK_FIX_ELEVATION.R
+data/SourceData/Map/README_ELEVATION_FIX.md
+
 # Generated figures (optional - uncomment if figures are regenerated)
 figs/*.png
 figs/*.pdf
