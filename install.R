@@ -7,6 +7,8 @@
 # Updated: March 12, 2026
 
 # List of all required packages
+# NOTE: sf, rnaturalearth, rnaturalearthdata, elevatr, tmap, maptiles, terra 
+# are now installed via conda in environment.yml to avoid compilation issues
 required_packages <- c(
   # Data manipulation & import/export
   "tidyverse", "readxl", "openxlsx", "data.table", "reshape2", "dplyr", "tidyr", "janitor",
@@ -19,9 +21,6 @@ required_packages <- c(
   "ggplot2", "cowplot", "ggrepel", "ggvegan", "ggforce", "ggsci", "rcartocolor", 
   "viridis", "ggpubr", "ggthemes", "ggmap", "ggtext", "heatmaply", "pheatmap", 
   "latex2exp", "maps",
-  
-  # Geospatial & mapping (for 00_Map.Rmd)
-  "sf", "rnaturalearth", "rnaturalearthdata", "elevatr", "tmap", "maptiles", "terra",
   
   # Utility & other
   "magrittr", "gapminder", "forcats", "tibble", "grid", "scatterplot3d", 

@@ -8,7 +8,18 @@ name: "base"
 # these restrictions completely.
 channels:
   - conda-forge
-# dependencies:
-# - add packages here
-# - one per line
+dependencies:
+  # System-level spatial dependencies (must come before R packages)
+  - libgdal
+  - libgeos
+  - libproj
+  - libudunits2
+  # R spatial packages via conda (avoids compilation issues)
+  - r-sf
+  - r-rnaturalearth
+  - r-rnaturalearthdata
+  - r-terra
+  - r-tmap
+  - r-maptiles
+  - r-elevatr
 prefix: "/opt/conda"
