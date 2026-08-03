@@ -19,6 +19,7 @@
 *~
 *.swp
 *.swo
+~$*
 
 # R Markdown HTML outputs (regenerated from .Rmd files)
 *.nb.html
@@ -46,16 +47,25 @@ ENV/
 workflows/
 
 # Large data files (optional - uncomment if data is stored elsewhere)
-# data/*.csv
-# data/*.xlsx
+data/*.csv
+data/*.xlsx
+
+# Legacy/old data and figures
+data/fig/
+data/SourceData/External/csvs/old/
 
 # Generated figures (optional - uncomment if figures are regenerated)
-# figs/*.png
-# figs/*.pdf
-# figs/*.rds
+figs/*.png
+figs/*.pdf
+figs/*.rds
+figs/**/*.png
+figs/**/*.pdf
+figs/napari_insets/
 
 # Image files (generally regenerated)
 *.png
+*.ai
+*.svg
 
 # Legacy and testing files (development only)
 _legacy_scripts/
@@ -84,7 +94,6 @@ RDA_QUALITY_ASSESSMENT.md
 QUICK_REFERENCE.md
 
 # Generated outputs and large folders
-figs/
 notebooks_cleaned/
 NOTEBOOK_EXECUTION_RESULTS.csv
 
