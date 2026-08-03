@@ -20,9 +20,12 @@ required_packages <- c(
   "viridis", "ggpubr", "ggthemes", "ggmap", "ggtext", "heatmaply", "pheatmap", 
   "latex2exp", "maps",
   
+  # Geospatial & mapping (for 00_Map.Rmd)
+  "sf", "rnaturalearth", "rnaturalearthdata", "elevatr", "tmap", "maptiles", "terra",
+  
   # Utility & other
   "magrittr", "gapminder", "forcats", "tibble", "grid", "scatterplot3d", 
-  "tidypaleo", "corrplot", "DT", "corto"
+  "tidypaleo", "corrplot", "DT", "corto", "pacman"
 )
 
 # Install packages
