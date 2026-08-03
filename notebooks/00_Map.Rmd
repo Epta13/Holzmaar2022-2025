@@ -61,6 +61,7 @@ To add elevation data to Panel A: - Run the script `../data/SourceData/Map/DEM_A
 # Setup
 
 ```{r setup, message=FALSE, warning=FALSE}
+install.packages("pacman")
 library(pacman)
 
 # Keep a clean package state for reproducibility.

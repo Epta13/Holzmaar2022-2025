@@ -8,6 +8,7 @@ editor_options:
 # Loading packages
 
 ```{r message=FALSE, warning=FALSE, include=FALSE}
+install.packages("pacman")
 library("pacman")
 
 pacman::p_unload(pacman::p_loaded(), character.only = TRUE)

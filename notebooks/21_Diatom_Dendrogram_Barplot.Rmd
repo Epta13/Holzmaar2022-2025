@@ -18,6 +18,7 @@ Create a hierarchical clustering visualization of diatom communities with:
 # 1. Load Libraries and Data
 
 ```{r message=FALSE, warning=FALSE}
+install.packages("pacman")
 library("pacman")
 pacman::p_load("readxl", "dplyr", "tidyr", "vegan", "dendextend", "colorspace")
 

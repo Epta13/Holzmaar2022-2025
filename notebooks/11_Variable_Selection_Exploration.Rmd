@@ -11,6 +11,7 @@ This notebook visualizes the correlation structure and performs PCA on the full 
 # Load Required Libraries
 
 ```{r message=FALSE, warning=FALSE}
+install.packages("pacman")
 library("pacman")
 pacman::p_unload(pacman::p_loaded(), character.only = TRUE)
 pacman::p_load("readxl", "dplyr", "tidyr", "ggplot2", "corrplot", "ggbiplot", "factoextra", "vegan", "knitr")

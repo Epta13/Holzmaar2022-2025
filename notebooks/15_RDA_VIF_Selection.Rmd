@@ -23,6 +23,7 @@ if ("tcltk" %in% loadedNamespaces()) {
   unloadNamespace("tcltk")
 }
 
+install.packages("pacman")
 library("pacman")
 pacman::p_unload(pacman::p_loaded(), character.only = TRUE)
 

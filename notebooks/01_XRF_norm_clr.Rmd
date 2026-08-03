@@ -16,11 +16,10 @@ editor_options:
 # }
 # 
 # invisible(lapply(packages_cleaning, library, character.only =T))
-
-#install.packages("pacman")
 ```
 
 ```{r include=FALSE}
+install.packages("pacman")
 library(pacman)
 
 pacman::p_unload(pacman::p_loaded(), character.only = TRUE)

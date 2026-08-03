@@ -12,6 +12,8 @@ setwd("~/Holzmaar/Holzmaar2022-2025")
 # Load required packages
 
 ```{r}
+# Install packages before loading
+install.packages(c("rioja", "ggplot2", "readxl", "dplyr", "tidyr", "cowplot", "latex2exp", "vegan", "janitor"), quiet = TRUE)
 library("rioja")
 library("ggplot2")
 library("readxl")

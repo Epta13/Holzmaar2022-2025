@@ -20,6 +20,7 @@ The main analysis uses a Variance Inflation Factor (VIF) threshold of \< 10 to s
 # 1. Load and Prepare Data
 
 ```{r message=FALSE, warning=FALSE}
+install.packages("pacman")
 library("pacman")
 pacman::p_load("readxl", "dplyr", "tidyr", "vegan", "corrplot", "knitr")
 

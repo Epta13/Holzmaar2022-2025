@@ -16,6 +16,7 @@ This analysis tests this hypothesis using three complementary approaches.
 # 1. Loading Packages and Data
 
 ```{r message=FALSE, warning=FALSE}
+install.packages("pacman")
 library("pacman")
 pacman::p_load("readxl", "dplyr", "tidyr", "vegan", "corrplot")
 

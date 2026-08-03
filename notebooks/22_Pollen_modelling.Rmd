@@ -10,6 +10,8 @@ Model missing Holzmaar pollen data (13258 to 10995 BP) using Meerfelder Maar pol
 **Strategy:** 1. Compare Meerfelder Maar and Holzmaar data in the overlapping period (where both exist) 2. Calculate scaling factors and offsets for each pollen type 3. Check if trends are similar between the two sites 4. Apply the scaling to Meerfelder Maar data in the missing period (13258-10995 BP)
 
 ```{r setup, message=FALSE, warning=FALSE}
+# Install packages before loading
+install.packages(c("readxl", "dplyr", "ggplot2", "tidyr", "zoo"), quiet = TRUE)
 library(readxl)
 library(dplyr)
 library(ggplot2)
