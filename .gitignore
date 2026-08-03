@@ -22,6 +22,8 @@
 
 # R Markdown HTML outputs (regenerated from .Rmd files)
 *.nb.html
+# R Markdown auto-generated _files folders
+notebooks/*_files/
 
 # Python
 __pycache__/
@@ -51,3 +53,6 @@ workflows/
 # figs/*.png
 # figs/*.pdf
 # figs/*.rds
+
+# Image files (generally regenerated)
+*.png
