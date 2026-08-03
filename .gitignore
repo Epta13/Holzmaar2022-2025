@@ -110,6 +110,5 @@ EXTERNAL_TEMP_INTEGRATION_NOTES.md
 Zahajska*.pdf
 
 # Internal documentation and audit files
-NOTEBOOKS_ANALYSIS.md
 NOTEBOOK_REVIEW_AUDIT.md
-DATA_MANIFEST.md
+DATA_MANIFEST.mdnotebooks/10_RDA-Fig3.Rmd
