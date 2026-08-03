@@ -1,0 +1,70 @@
+# Export Pinus + Betula Combined Panel Figure
+
+```{r}
+# Create combined Pinus + Betula figure showing modelled extension
+pinus_betula_combined <- plot_grid(p4_8, p5_panel,
+                                    ncol = 1,
+                                    align = "v",
+                                    axis = "lr",
+                                    rel_heights = c(0.7, 0.7),
+                                    hjust = 0,
+                                    vjust = 0,
+                                    greedy = TRUE)
+
+# Add overlays
+plot_left_panel_pb <- 0.105 
+plot_right_panel_pb <- 0.9
+plot_width_panel_pb <- plot_right_panel_pb - plot_left_panel_pb
+
+hsi_nodata_norm_start_panel_pb <- plot_left_panel_pb + pmax(0, pmin(1, (hsi_nodata_start - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_panel_pb
+hsi_nodata_norm_end_panel_pb <- plot_left_panel_pb + pmax(0, pmin(1, (hsi_nodata_end - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_panel_pb
+
+x_norm_boundaries_panel_pb <- plot_left_panel_pb + pmax(0, pmin(1, (climate_boundaries_interior - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_panel_pb
+x_norm_start_panel_pb <- plot_left_panel_pb + pmax(0, pmin(1, (climate_periods$start - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_panel_pb
+x_norm_end_panel_pb <- plot_left_panel_pb + pmax(0, pmin(1, (climate_periods$end - age_limits[1]) / (age_limits[2] - age_limits[1]))) * plot_width_panel_pb
+
+pinus_betula_with_overlays <- ggdraw(xlim = c(0, 1), ylim = c(0, 1), clip = "on") +
+  # Add hiatus rectangle
+  ggpattern::geom_rect_pattern(aes(xmin = hsi_nodata_norm_start_panel_pb, xmax = hsi_nodata_norm_end_panel_pb,
+                                    ymin = 0.1, ymax = 1),
+                               fill = "gray80", alpha = 0.1,
+                               pattern = "stripe", pattern_fill = "gray60",
+                               pattern_color = "gray60", pattern_density = 0.3,
+                               pattern_spacing = 0.01, pattern_angle = 45, 
+                               pattern_alpha = 0.1,
+                               color = "gray50", linetype = "dashed", linewidth = 0) +
+  draw_plot(pinus_betula_combined, x = 0, y = 0, width = 1, height = 1) +
+  # Add vertical dashed lines
+  geom_segment(data = data.frame(x = x_norm_boundaries_panel_pb),
+               aes(x = x, xend = x, y = 0.1, yend = 1),
+               linetype = "dashed", color = "gray30", linewidth = 0.3) +
+  # Add text labels
+  geom_text(aes(x = (x_norm_start_panel_pb[1] + x_norm_end_panel_pb[1])/2, y = 1.02),
+            label = "Pleniglacial", size = 2.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_panel_pb[2] + x_norm_end_panel_pb[2])/2, y = 1.02),
+            label = "Bølling", size = 2.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_panel_pb[3] + x_norm_end_panel_pb[3])/2, y = 1.02),
+            label = "Allerød", size = 2.5, fontface = "bold") +
+  geom_text(aes(x = (x_norm_start_panel_pb[4] + x_norm_end_panel_pb[4])/2, y = 1.02),
+            label = "Younger Dryas", size = 2.5, fontface = "bold") +
+  # Add hiatus label
+  geom_text(aes(x = (hsi_nodata_norm_start_panel_pb + hsi_nodata_norm_end_panel_pb)/2, y = 0.5),
+            label = "Hiatus", size = 2.5, fontface = "bold", color = "gray30") +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1.05), clip = "off")
+
+print(pinus_betula_with_overlays)
+
+# Save Pinus + Betula figure as PNG
+ggsave("../figs/Pinus_Betula_pollen_combined.png", pinus_betula_with_overlays,
+       width = 14, height = 6, units = "cm", dpi = 300, bg = "transparent")
+
+cat("Pinus + Betula combined figure saved: ../figs/Pinus_Betula_pollen_combined.png\n")
+cat("Dimensions: 14 × 6 cm at 300 DPI\n")
+
+# Save as SVG for vector graphics
+ggsave("../figs/Pinus_Betula_pollen_combined.svg",
+       plot = pinus_betula_with_overlays,
+       width = 14, height = 6, units = "cm", dpi = 220)
+
+cat("Vector version saved: ../figs/Pinus_Betula_pollen_combined.svg\n")
+```

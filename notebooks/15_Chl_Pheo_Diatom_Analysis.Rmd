@@ -1,0 +1,437 @@
+---
+title: "Chlorophyll a/Pheophytin Ratio and Diatom Community Analysis"
+output: html_notebook
+editor_options:
+  chunk_output_type: inline
+---
+
+# Objective
+
+Investigate the relationship between the Chlorophyll a/Pheophytin (Chl a/Pheo) ratio and diatom community composition. The Chl a/Pheo ratio is a proxy for lake level/water depth: - **Lower ratio** (degraded Chl a) → shallow water, benthic diatoms dominate - **Higher ratio** (fresh Chl a) → deep water, planktonic diatoms dominate
+
+This analysis tests this hypothesis using three complementary approaches.
+
+------------------------------------------------------------------------
+
+# 1. Loading Packages and Data
+
+```{r message=FALSE, warning=FALSE}
+library("pacman")
+pacman::p_load("readxl", "dplyr", "tidyr", "vegan", "corrplot")
+
+cat("✓ All required packages loaded successfully\n")
+```
+
+```{r}
+# Load diatom data
+diatoms_raw <- read_excel("../data/SourceData/diatoms_Lujan.xlsx", sheet = "diatoms")
+diatom_names <- read_excel("../data/SourceData/diatoms_Lujan.xlsx", sheet = "diatoms_name")
+diatom_total <- read_excel("../data/SourceData/diatoms_Lujan.xlsx", sheet = "total_abundance")
+
+cat("✓ Diatom data loaded\n")
+cat(sprintf("  - Diatom species data: %d samples × %d species\n", nrow(diatoms_raw), ncol(diatoms_raw)-3))
+cat(sprintf("  - Diatom classification: %d species\n", nrow(diatom_names)))
+cat(sprintf("  - Diatom groups: Planktonic (%d) + Benthic (%d)\n",
+            sum(diatom_names$cat == "P"), sum(diatom_names$cat == "B")))
+
+# Create mapping of species to category
+species_cat_map <- setNames(diatom_names$cat, diatom_names$names)
+```
+
+```{r}
+# Load Chl a/Pheo ratio - calculated same way as notebook 13
+# Load raw pigment concentrations
+pig_raw <- read_excel("../data/Pig_clean.xlsx")
+pig_with_meta <- read_excel("../data/pig_alr.xlsx")
+
+# Combine and calculate ratio
+chl_pheo_data <- data.frame(
+  depth = pig_with_meta$depth,
+  age = pig_with_meta$age,
+  Chla = pig_raw$Chla,
+  Pheo = pig_raw$PhphT
+)
+
+# Remove NA and zero values
+chl_pheo_clean <- chl_pheo_data %>%
+  filter(Chla > 0 & Pheo > 0) %>%
+  mutate(ratio = Chla / Pheo) %>%
+  arrange(depth)
+
+cat("Chl a/Pheophytin Ratio Data:\n")
+cat(sprintf("  - Samples: %d\n", nrow(chl_pheo_clean)))
+cat(sprintf("  - Chl a range: %.2f - %.2f µg/g\n", min(chl_pheo_clean$Chla), max(chl_pheo_clean$Chla)))
+cat(sprintf("  - Pheophytin range: %.2f - %.2f µg/g\n", min(chl_pheo_clean$Pheo), max(chl_pheo_clean$Pheo)))
+cat(sprintf("  - Ratio range: %.3f - %.3f\n", min(chl_pheo_clean$ratio), max(chl_pheo_clean$ratio)))
+cat(sprintf("  - Mean ratio: %.3f\n\n", mean(chl_pheo_clean$ratio)))
+```
+
+------------------------------------------------------------------------
+
+# 2. Data Preparation
+
+```{r}
+# Standardize diatom data to proportions (relative abundance)
+# Remove the first 3 metadata columns
+diatom_species <- diatoms_raw[, 4:ncol(diatoms_raw)]
+diatom_ages <- diatoms_raw$mean_VT22
+
+# Convert to relative abundance (proportions)
+diatom_prop <- sweep(diatom_species, 1, rowSums(diatom_species), "/")
+
+# Create planktonic/benthic index
+# Get column names that are diatom species
+species_names <- colnames(diatom_species)
+
+# Map species to categories
+species_cats <- sapply(species_names, function(sp) {
+  # Match species name to diatom_names
+  idx <- which(diatom_names$names == sp)
+  if(length(idx) > 0) {
+    return(diatom_names$cat[idx[1]])
+  } else {
+    return(NA)
+  }
+})
+
+cat("Species categorization:\n")
+cat(sprintf("  - Planktonic species in data: %d\n", sum(species_cats == "P", na.rm=TRUE)))
+cat(sprintf("  - Benthic species in data: %d\n", sum(species_cats == "B", na.rm=TRUE)))
+cat(sprintf("  - Unknown: %d\n", sum(is.na(species_cats))))
+
+# Calculate benthic/planktonic proportions for each sample
+benthic_prop <- rowSums(diatom_prop[, which(species_cats == "B")], na.rm=TRUE)
+planktonic_prop <- rowSums(diatom_prop[, which(species_cats == "P")], na.rm=TRUE)
+
+# Benthic/Planktonic index (higher = more benthic)
+benthic_index <- benthic_prop / (benthic_prop + planktonic_prop)
+
+cat("\nBenthic/Planktonic Index:\n")
+cat(sprintf("  - Mean benthic proportion: %.3f\n", mean(benthic_index, na.rm=TRUE)))
+cat(sprintf("  - Range: %.3f - %.3f\n", min(benthic_index, na.rm=TRUE), max(benthic_index, na.rm=TRUE)))
+```
+
+```{r}
+# Merge diatom data with Chl a/Pheo ratio by DEPTH (not age)
+# Depth should be more reliable for alignment
+
+diatom_merge_data <- data.frame(
+  depth = diatoms_raw$`comp_depth (mm)`,
+  age = diatoms_raw$mean_VT22,
+  benthic_prop = benthic_prop,
+  planktonic_prop = planktonic_prop,
+  benthic_index = benthic_index
+)
+
+# Merge with Chl/Pheo ratio data by DEPTH with tolerance
+# Using nearest neighbor matching with max 10 mm tolerance
+combined_data <- data.frame()
+diatom_row_indices <- c()
+
+for(i in 1:nrow(diatom_merge_data)) {
+  diatom_depth <- diatom_merge_data$depth[i]
+  
+  # Find closest pigment sample (within 10 mm tolerance)
+  pigment_idx <- which.min(abs(chl_pheo_clean$depth - diatom_depth))
+  depth_diff <- abs(chl_pheo_clean$depth[pigment_idx] - diatom_depth)
+  
+  if(depth_diff <= 10) {  # 10 mm tolerance
+    combined_data <- rbind(combined_data, data.frame(
+      depth_diatom = diatom_depth,
+      age_diatom = diatom_merge_data$age[i],
+      benthic_prop = diatom_merge_data$benthic_prop[i],
+      planktonic_prop = diatom_merge_data$planktonic_prop[i],
+      benthic_index = diatom_merge_data$benthic_index[i],
+      depth_chlpheo = chl_pheo_clean$depth[pigment_idx],
+      Chla = chl_pheo_clean$Chla[pigment_idx],
+      Pheo = chl_pheo_clean$Pheo[pigment_idx],
+      ratio = chl_pheo_clean$ratio[pigment_idx],
+      depth_diff_mm = depth_diff
+    ))
+    diatom_row_indices <- c(diatom_row_indices, i)
+  }
+}
+
+cat("Combined Dataset (Diatoms + Chl a/Pheo Ratio - Depth-Based Merge):\n")
+cat(sprintf("  - Merge tolerance: ± 10 mm depth difference\n"))
+cat(sprintf("  - Samples with both data: %d\n", nrow(combined_data)))
+cat(sprintf("  - Samples in diatom data only: %d\n", nrow(diatom_merge_data) - nrow(combined_data)))
+cat(sprintf("  - Samples in Chl/Pheo data only: %d\n", nrow(chl_pheo_clean) - nrow(combined_data)))
+cat(sprintf("  - Depth alignment success rate: %.1f%%\n", 100 * nrow(combined_data) / nrow(diatom_merge_data)))
+
+if(nrow(combined_data) > 0) {
+  cat(sprintf("\n  Average depth difference between matched samples: %.2f mm\n", mean(combined_data$depth_diff_mm)))
+}
+
+cat("\n✓ Data ready for correlation analyses\n")
+```
+
+------------------------------------------------------------------------
+
+# 3. OPTION 1: Direct Correlation with Diatom Species Composition
+
+```{r}
+cat("═══════════════════════════════════════════════════════════\n")
+cat("OPTION 1: Direct Correlation (Ratio vs Diatom Species)\n")
+cat("═══════════════════════════════════════════════════════════\n\n")
+
+if(nrow(combined_data) == 0) {
+  cat("WARNING: No overlapping samples. Cannot perform correlation.\n")
+} else {
+  # Extract diatom species proportions for overlapping samples (using stored indices)
+  diatom_prop_overlap <- diatom_prop[diatom_row_indices, ]
+  
+  # Calculate correlations between Chl a/Pheo ratio and each species
+  cor_list <- list()
+  for(sp in colnames(diatom_prop_overlap)) {
+    cor_test <- cor.test(combined_data$ratio, diatom_prop_overlap[, sp], 
+                         method = "pearson", use = "complete.obs")
+    cor_list[[sp]] <- data.frame(
+      species = sp,
+      correlation = as.numeric(cor_test$estimate),
+      p_value = cor_test$p.value,
+      category = species_cats[sp],
+      stringsAsFactors = FALSE
+    )
+  }
+  
+  # Combine into data frame
+  cor_results <- do.call(rbind, cor_list)
+  rownames(cor_results) <- NULL
+  
+  # Sort by correlation strength
+  cor_results <- cor_results[order(abs(cor_results$correlation), decreasing = TRUE), ]
+  
+  # Identify significant correlations (p < 0.05)
+  cor_results$significant <- cor_results$p_value < 0.05
+  
+  cat("Correlation Results (Pearson r):\n")
+  cat(sprintf("  - Planktonic species correlations:\n"))
+  plank_cors <- cor_results[cor_results$category == "P", ]
+  if(nrow(plank_cors) > 0) {
+    for(i in 1:nrow(plank_cors)) {
+      sig_marker <- ifelse(plank_cors$significant[i], " *", "")
+      cat(sprintf("    %s: r = %.3f, p = %.4f%s\n", 
+                  plank_cors$species[i], plank_cors$correlation[i], 
+                  plank_cors$p_value[i], sig_marker))
+    }
+  }
+  
+  cat(sprintf("  - Benthic species correlations (top 10):\n"))
+  benthic_cors <- cor_results[cor_results$category == "B", ]
+  benthic_cors <- benthic_cors[order(abs(benthic_cors$correlation), decreasing = TRUE), ]
+  if(nrow(benthic_cors) > 10) benthic_cors <- benthic_cors[1:10, ]
+  for(i in 1:nrow(benthic_cors)) {
+    sig_marker <- ifelse(benthic_cors$significant[i], " *", "")
+    cat(sprintf("    %s: r = %.3f, p = %.4f%s\n", 
+                benthic_cors$species[i], benthic_cors$correlation[i], 
+                benthic_cors$p_value[i], sig_marker))
+  }
+  
+  cat("\n* = p < 0.05\n\n")
+  
+  # Summary statistics
+  cat("Summary:\n")
+  cat(sprintf("  - Planktonic species with positive correlation: %d/%d\n",
+              sum(plank_cors$correlation > 0), nrow(plank_cors)))
+  cat(sprintf("  - Benthic species with negative correlation: %d/%d\n",
+              sum(benthic_cors$correlation < 0), nrow(benthic_cors)))
+  cat(sprintf("  - Significant correlations (p < 0.05): %d\n",
+              sum(cor_results$significant)))
+}
+```
+
+------------------------------------------------------------------------
+
+# 4. OPTION 2: Comparing Planktonic vs Benthic-Dominated Communities
+
+```{r fig.width=8, fig.height=6}
+cat("═══════════════════════════════════════════════════════════\n")
+cat("OPTION 2: Community Type Comparison (Planktonic vs Benthic)\n")
+cat("═══════════════════════════════════════════════════════════\n\n")
+
+if(nrow(combined_data) == 0) {
+  cat("WARNING: No overlapping samples. Cannot perform analysis.\n")
+} else {
+  # Classify combined samples as planktonic or benthic-dominated
+  threshold <- 0.5
+  combined_data$community_type <- ifelse(combined_data$benthic_index > threshold, 
+                                         "Benthic-dominated", "Planktonic-dominated")
+  
+  # Summary
+  cat(sprintf("Sample classification (threshold: %d%% benthic):\n", threshold*100))
+  cat(sprintf("  - Benthic-dominated: %d samples\n", sum(combined_data$community_type == "Benthic-dominated")))
+  cat(sprintf("  - Planktonic-dominated: %d samples\n", sum(combined_data$community_type == "Planktonic-dominated")))
+  
+  # Compare Chl a/Pheo ratio between groups
+  benthic_ratio <- combined_data$ratio[combined_data$community_type == "Benthic-dominated"]
+  planktonic_ratio <- combined_data$ratio[combined_data$community_type == "Planktonic-dominated"]
+  
+  cat("\nChl a/Pheo Ratio by Community Type:\n")
+  cat(sprintf("  - Benthic-dominated: Mean = %.3f, SD = %.3f, n = %d\n", 
+              mean(benthic_ratio, na.rm=TRUE), sd(benthic_ratio, na.rm=TRUE), length(benthic_ratio)))
+  cat(sprintf("  - Planktonic-dominated: Mean = %.3f, SD = %.3f, n = %d\n",
+              mean(planktonic_ratio, na.rm=TRUE), sd(planktonic_ratio, na.rm=TRUE), length(planktonic_ratio)))
+  
+  # Statistical test (check if we have enough observations)
+  if(length(na.omit(benthic_ratio)) >= 2 && length(na.omit(planktonic_ratio)) >= 2) {
+    # Mann-Whitney U test - more robust for small samples
+    mw_test <- wilcox.test(benthic_ratio, planktonic_ratio)
+    cat(sprintf("\nMann-Whitney U Test:\n"))
+    cat(sprintf("  - p-value: %.4f\n", mw_test$p.value))
+    cat(sprintf("  - Significant difference (p < 0.05): %s\n",
+                ifelse(mw_test$p.value < 0.05, "YES ✓", "NO")))
+    
+    # Also run t-test for comparison
+    t_test <- t.test(benthic_ratio, planktonic_ratio)
+    cat(sprintf("\nIndependent t-test (parametric):\n"))
+    cat(sprintf("  - p-value: %.4f\n", t_test$p.value))
+    cat(sprintf("  - Significant difference (p < 0.05): %s\n",
+                ifelse(t_test$p.value < 0.05, "YES ✓", "NO")))
+  } else {
+    cat("\nWARNING: Insufficient observations in one or both groups for statistical testing.\n")
+  }
+  
+  # Create boxplot only if we have data
+  if(length(na.omit(benthic_ratio)) > 0 || length(na.omit(planktonic_ratio)) > 0) {
+    par(mfrow=c(1,1), mar=c(5, 4, 2, 2))
+    boxplot(list(benthic_ratio, planktonic_ratio),
+            names = c("Benthic-dominated", "Planktonic-dominated"),
+            ylab = "Chl a/Pheophytin Ratio",
+            col = c("lightblue", "lightcyan"),
+            main = "Chl a/Pheo Ratio by Diatom Community Type")
+    
+    # Add individual points
+    stripchart(list(benthic_ratio, planktonic_ratio),
+               vertical = TRUE,
+               at = c(1, 2),
+               pch = 19,
+               col = rgb(0, 0, 0, 0.5),
+               add = TRUE,
+               method = "jitter")
+  }
+}
+```
+
+------------------------------------------------------------------------
+
+# 5. OPTION 3: Benthic/Planktonic Index Correlation
+
+```{r fig.width=8, fig.height=6}
+cat("═══════════════════════════════════════════════════════════\n")
+cat("OPTION 3: Benthic/Planktonic Index Correlation\n")
+cat("═══════════════════════════════════════════════════════════\n\n")
+
+if(nrow(combined_data) == 0) {
+  cat("WARNING: No overlapping samples. Cannot perform analysis.\n")
+} else {
+  # Calculate correlation between benthic index and Chl a/Pheo ratio
+  cor_pearson <- cor.test(combined_data$benthic_index, combined_data$ratio, 
+                          method = "pearson")
+  cor_spearman <- cor.test(combined_data$benthic_index, combined_data$ratio, 
+                           method = "spearman")
+  
+  cat("Index Definition:\n")
+  cat("  Benthic Index = Benthic proportion / (Benthic + Planktonic)\n")
+  cat("  Range: 0 (100% planktonic) to 1 (100% benthic)\n\n")
+  
+  cat("Correlation Results:\n")
+  cat(sprintf("  - Pearson r = %.3f, p-value = %.4f\n", 
+              cor_pearson$estimate, cor_pearson$p.value))
+  cat(sprintf("  - Spearman rho = %.3f, p-value = %.4f\n",
+              cor_spearman$estimate, cor_spearman$p.value))
+  
+  # Interpret correlation
+  expected_direction <- "negative"
+  actual_direction <- ifelse(cor_pearson$estimate < 0, "negative", "positive")
+  direction_match <- ifelse(expected_direction == actual_direction, "✓ EXPECTED", "✗ UNEXPECTED")
+  
+  cat(sprintf("\nInterpretation:\n"))
+  cat(sprintf("  - Expected: NEGATIVE correlation\n"))
+  cat(sprintf("  - Observed: %s correlation (%s)\n", actual_direction, direction_match))
+  
+  # Calculate R² to show explained variance
+  r_squared <- cor_pearson$estimate^2 * 100
+  cat(sprintf("  - Explained variance (R²): %.1f%%\n", r_squared))
+  
+  # Fit linear regression
+  lm_model <- lm(combined_data$ratio ~ combined_data$benthic_index)
+  
+  # Create scatter plot with regression line
+  plot(combined_data$benthic_index, combined_data$ratio,
+       xlab = "Benthic/Planktonic Index",
+       ylab = "Chl a/Pheophytin Ratio",
+       main = "Relationship between Diatom Community Type and Pigment Ratio",
+       pch = 19,
+       col = rgb(0, 0, 0, 0.6),
+       cex = 1.2)
+  
+  # Add regression line
+  abline(lm_model, col = "red", lwd = 2)
+  
+  # Add correlation info to plot
+  text(0.05, 0.95 * max(combined_data$ratio, na.rm=TRUE),
+       sprintf("r = %.3f, p = %.4f\nR² = %.1f%%", 
+               cor_pearson$estimate, cor_pearson$p.value, r_squared),
+       pos = 4,
+       cex = 1,
+       bg = "white")
+  
+  # Print regression summary
+  cat("\nLinear Regression Model:\n")
+  print(summary(lm_model))
+}
+```
+
+------------------------------------------------------------------------
+
+# 6. Data Structure for Next Steps
+
+```{r}
+cat("═══════════════════════════════════════════════════════════\n")
+cat("DATA READY FOR ANALYSIS\n")
+cat("═══════════════════════════════════════════════════════════\n\n")
+
+if(nrow(combined_data) == 0) {
+  cat("⚠ WARNING: No samples matched between datasets!\n")
+  cat("Samples with diatom data: %d\n", nrow(diatom_merge_data))
+  cat("Samples with Chl/Pheo data: %d\n", nrow(chl_pheo_clean))
+  cat("\nTroubleshooting:\n")
+  cat("- Check age/depth alignment between datasets\n")
+  cat("- May need to merge by depth instead of age\n")
+  cat("- Consider interpolation if sampling resolutions differ\n")
+} else {
+  cat("✓ ANALYSIS COMPLETE\n\n")
+  
+  cat("Summary of Results:\n")
+  cat(sprintf("- Samples analyzed: %d\n", nrow(combined_data)))
+  cat(sprintf("- Benthic-dominated: %d (%.1f%%)\n", 
+              sum(combined_data$benthic_index > 0.5),
+              100 * sum(combined_data$benthic_index > 0.5) / nrow(combined_data)))
+  cat(sprintf("- Planktonic-dominated: %d (%.1f%%)\n",
+              sum(combined_data$benthic_index <= 0.5),
+              100 * sum(combined_data$benthic_index <= 0.5) / nrow(combined_data)))
+  
+  cat("\nKey Data Structures:\n")
+  cat("  1. combined_data: Merged diatom + Chl a/Pheo ratio data\n")
+  cat("     - Columns: age, depth_diatom, benthic_prop, planktonic_prop,\n")
+  cat("               benthic_index, depth_chlpheo, Chla, Pheo, ratio, community_type\n\n")
+  
+  cat("  2. diatom_prop_overlap: Species proportions for overlapping samples\n")
+  cat(sprintf("     - Dimensions: %d samples × %d species\n", 
+              nrow(diatom_prop_overlap), ncol(diatom_prop_overlap))
+  )
+  
+  cat("\nAnalyses Performed:\n")
+  cat("  ✓ OPTION 1: Direct correlation with diatom species\n")
+  cat("  ✓ OPTION 2: Community type comparison (planktonic vs benthic)\n")
+  cat("  ✓ OPTION 3: Benthic index regression (continuous)\n\n")
+  
+  cat("Next Steps:\n")
+  cat("  1. Examine species-level correlations (Option 1)\n")
+  cat("  2. Compare community types (Option 2)\n")
+  cat("  3. Test benthic index relationship (Option 3)\n")
+  cat("  4. Integrate results with RDA findings (lake level paleoclimate)\n")
+  cat("  5. Create publication-quality figures combining all approaches\n")
+}
+```

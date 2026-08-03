@@ -79,6 +79,14 @@ The workflow is organized into a **modular, reproducible pipeline**, ensuring tr
 - Quantifies explanatory power of climate forcing
 - *Notebook:* `11_RDA-Fig3_inUse.Rmd`
 
+**RDA Quality Control & Variable Selection (VIF)**
+- Assesses multicollinearity among environmental predictors using Variance Inflation Factor (VIF), following Blanchet et al. (2008)
+- Documents VIF thresholds, multiple-comparison adjustment, and manuscript-ready QC language for the RDA in `11_RDA-Fig3_inUse.Rmd`
+- Reproduces the RDA and publication figure using automatic VIF-based variable selection, as an alternative to expert manual selection (addresses reviewer suggestions)
+- Explores correlation structure and redundancy among candidate environmental variables ahead of selection
+- Empirically justifies the chosen VIF threshold by comparing candidate thresholds (3–10)
+- *Notebooks:* `15_RDA_QualityControl_VIF.Rmd`, `16_RDA_VIF_Selection.Rmd`, `17_Variable_Selection_Exploration.Rmd`, `18_Supplement_VIF_Threshold_Analysis.Rmd`
+
 **Pollen & Vegetation Modeling**
 - Statistical prediction of missing pollen data (13,258-10,995 BP)
 - Calibration to Meerfelder Maar reference site
@@ -100,6 +108,11 @@ The workflow is organized into a **modular, reproducible pipeline**, ensuring tr
 - PCA trajectories, clustering dendrograms, correlation heatmaps
 - Pattern-filled publication figures
 - *Notebooks:* `05_Plotting_XRF_clusters.Rmd`, `09_Sequential_Extraction_Plots.Rmd`, `14_Combined_Figure.Rmd`
+
+**Diatom & Pigment Supplementary Analyses**
+- Supplementary pigment plots and Chlorophyll a/Pheophytin ratio analysis as a proxy for lake level/water depth
+- Diatom community dendrogram (hierarchical clustering) with compositional barplots by pollen zone
+- *Notebooks:* `19_Pigments_SupplementaryPlots.Rmd`, `20_Chl_Pheo_Diatom_Analysis.Rmd`, `21_Diatom_Dendrogram_Barplot.Rmd`
 
 ---
 
@@ -124,68 +137,108 @@ The workflow is organized into a **modular, reproducible pipeline**, ensuring tr
 
 ---
 
-## Project Structure
+## Repository Contents
+
+### 📦 What's Included in This Repository
+
+This repository contains **publication-ready source code and data** for reproducible paleoclimate analysis. See the file structure below:
 
 ```
 Holzmaar2022-2025/
 │
-├── README.md                              # This file
-├── LICENSE                                # CC-BY-4.0 License
+├── 📄 README.md                           # This file
+├── 📄 LICENSE                             # CC-BY-4.0 License
+├── 📄 .gitignore                          # Git configuration
 │
-├── notebooks/                             # Analysis workflows
+├── 📚 Documentation Files
+│   ├── EXECUTION_ORDER.md                 # How to run notebooks in sequence
+│   ├── QUICKSTART.md                      # 5-minute setup guide
+│   └── NOTEBOOKS_ANALYSIS.md              # Detailed notebook descriptions
+│
+├── 📓 notebooks/                          # Analysis workflows (18 Rmd files)
+│   ├── 00_Map.Rmd                         # Geographic context maps
 │   ├── 01_XRF_norm_clr.Rmd               # Data harmonization & CoDA
 │   ├── 02_ProxyProxy.Rmd                 # Proxy intercorrelations
 │   ├── 03_Interpolation.Rmd              # Resolution alignment
 │   ├── 04_ClusteringAndPCA_XRF.Rmd       # Zonal stratigraphy & PCA
-│   ├── 05_Plotting_XRF_clusters.Rmd      # Visualization
+│   ├── 05_Plotting_XRF_clusters.Rmd      # XRF visualization
 │   ├── 06_ClusteringAndPCA_MergedDatasets.Rmd  # Integrated analysis
-│   ├── 07_LowRes_data_prep.Rmd           # External data prep
-│   ├── 08_Pollen_modelling.Rmd           # Statistical pollen extension
-│   ├── 09_Sequential_Extraction_Plots.Rmd # Redox visualization
-│   ├── 10_Interpolation_External.Rmd     # Climate synthesis
-│   ├── 11_RDA-Fig3_inUse.Rmd             # Redundancy analysis
-│   ├── 12_DiscucssionPlot.Rmd            # Main discussion figure
-│   ├── 13_DiscucssionPlot_PinusBetula.Rmd # Pollen export
-│   ├── 14_Combined_Figure.Rmd            # Final composites
-│   ├── README.md                         # Notebook guide
-│   ├── QUICKSTART.md                     # 5-minute setup
+│   ├── 07_LowRes_data_prep.Rmd           # External data preparation
+│   ├── 08_Interpolation_External.Rmd     # Climate proxy integration
+│   ├── 09_RDA-Fig3_inUse.Rmd             # Redundancy analysis
+│   ├── 10_RDA_QualityControl_VIF.Rmd     # VIF assessment
+│   ├── 11_RDA_VIF_Selection.Rmd          # RDA variable selection
+│   ├── 12_Variable_Selection_Exploration.Rmd # Sensitivity analysis
+│   ├── 13_Pigments_SupplementaryPlots.Rmd # Pigment analysis
+│   ├── 14_Sequential_Extraction_Plots.Rmd # Redox chemistry visualization
+│   ├── 15_Chl_Pheo_Diatom_Analysis.Rmd   # Chlorophyll/pheopigment ratios
+│   ├── 16_Diatom_Dendrogram_Barplot.Rmd  # Diatom communities
+│   ├── 17_Pollen_modelling.Rmd           # Climate reconstruction
+│   ├── *.nb.html                         # Rendered notebook outputs
 │   └── Functions/                        # Utility functions
 │       ├── utility_functions.r
 │       ├── user_functions.r
 │       └── series5_functions.R
 │
-├── data/
+├── 📊 data/                               # Data files (100+ files)
 │   ├── SourceData/                       # Raw input files
-│   │   ├── HZM_xrf_raw_measurements.xlsx
-│   │   ├── HZM_hsi_xrf_calibrated_1mm.xlsx
-│   │   ├── HZM_pigment_calibration.xlsx
-│   │   ├── HZM_lowres_redox_diatom_pigment.xlsx
-│   │   ├── HZM_pigment_production.xlsx
-│   │   ├── HZM_diatom_assemblages.xlsx
-│   │   ├── HZM_xrf_depth_scale.csv
-│   │   └── External/csvs/               # Reference datasets
-│   │       ├── holzmaar_pollen_records.csv
+│   │   ├── *.xlsx files                  # XRF, HSI, pigment, diatom data
+│   │   ├── *.csv files                   # Processed datasets
+│   │   └── External/                     # Reference climate data
 │   │       ├── gdgt_temperature_proxy.csv
-│   │       ├── gerzensee_temperature.csv
-│   │       ├── egelsee_temperature.csv
 │   │       ├── ngrip_oxygen_isotopes.csv
 │   │       ├── insolation_data.csv
-│   │       ├── meerfelderMaar_*_pollen.csv
-│   │       └── [other reference datasets]
-│   ├── HolzPol_predicted_13258-10995.csv
-│   └── [Processed outputs from notebooks]
+│   │       └── [20+ reference datasets]
+│   ├── Processed outputs                 # Interpolated, merged datasets
+│   └── *.csv                             # Analysis-ready files
 │
-├── figs/                                 # Output figures
-│   ├── discussion_multiplot_*.png/svg
-│   ├── Pinus_Betula_pollen_combined.*
-│   ├── Sequential_Extraction_*_Flipped.*
-│   └── [All publication figures]
+├── 🔧 Environment & Configuration Files
+│   ├── environment.yml                   # Conda environment specification
+│   ├── install.R                         # R package dependencies
+│   ├── requirements.txt                  # Python dependencies
+│   ├── Dockerfile                        # Containerized environment
+│   ├── holzmaar.Rproj                    # RStudio project file
+│   └── run_analysis_pipeline.R           # Batch execution script
 │
-├── environment.yml                       # Conda environment
-├── install.R                             # R package dependencies
-├── requirements.txt                      # Python dependencies
-└── Dockerfile                            # Container specification
+└── 📋 Miscellaneous
+    ├── LICENSE                          # CC-BY-4.0 License
+    └── .gitignore                       # Git ignore rules
 ```
+
+### 📦 What's NOT Included (Excluded from Git)
+
+To keep the repository lean and focused on source code, the following are excluded via `.gitignore`:
+
+**Generated Outputs** 🖼️
+- `figs/` folder (313 MB of PNG/PDF figures - regenerated from notebooks)
+- All `.png` image files (auto-generated plots)
+
+**Working Documents** 📝
+- `notebooks_cleaned/` (alternative publication-ready notebook versions)
+- `_legacy_scripts/` (archived exploratory code)
+- Draft methods documents (`METHODS_UPDATED.txt`, `MANUSCRIPT_METHODS_RDA.txt`)
+- Working notes (`EXTERNAL_TEMP_INTEGRATION_NOTES.md`, `QUICK_REFERENCE.md`, `RDA_QUALITY_ASSESSMENT.md`)
+- Internal documentation (`NOTEBOOK_REVIEW_AUDIT.md`)
+
+**Test & Debug Files** 🧪
+- Test results and logs (`*_EXECUTION_LOG*.txt`, `*_TEST_REPORT*.md`, etc.)
+- Test scripts (`TEST_NOTEBOOKS.R`, `EXECUTE_ALL_NOTEBOOKS.R`, `test_all_notebooks.py`)
+- Test output CSVs (`NOTEBOOK_EXECUTION_RESULTS.csv`)
+
+**Manuscript Files** 📄
+- `Zahajska et al 2026 BG (HOLZ Late-Glacial).pdf` (stored locally only)
+
+**Auto-generated Folders** 📁
+- `notebooks/*_files/` (R Markdown auto-generated resource folders)
+
+### ✅ What You Can Do With This Repository
+
+1. **Run the full analysis pipeline** → All 18 notebooks execute end-to-end
+2. **Regenerate all figures** → PNG/PDF outputs created from source `.Rmd` files
+3. **Reproduce the manuscript** → All analyses, statistics, and figures exactly as published
+4. **Modify or extend analyses** → Clean, commented, documented code ready for adaptation
+5. **Use as a methodological reference** → Best practices for reproducible paleoclimate research
+6. **Share with reviewers/colleagues** → Professional, publication-ready structure
 
 ---
 
@@ -246,6 +299,14 @@ for (i in c(4, 5, 6, 7, 10, 11, 12, 13, 14)) {
 }
 ```
 
+**RDA Quality Control / VIF Variable Selection** (run after notebook 11):
+```r
+for (i in 15:21) {
+  notebook <- sprintf("notebooks/%02d_*.Rmd", i)
+  rmarkdown::render(notebook)
+}
+```
+
 **Estimated Runtime:** 30-60 minutes total (parallel execution recommended)
 
 ### **5. Check Outputs**
@@ -264,6 +325,8 @@ ls data/*.xlsx              # Processed datasets
 | **Dependent-1** | 04, 05 | 01 | Must follow Phase 1 |
 | **Dependent-2** | 06, 07 | 01-03 | Must follow Phase 1-2 |
 | **Dependent-3** | 10, 11, 12, 13, 14 | All prior | Run at end |
+| **RDA Quality Control (VIF)** | 15, 16, 17, 18 | 11 | Reviewer-response QC on the RDA in notebook 11 |
+| **Diatom/Pigment Supplement** | 19, 20, 21 | 01-07 | Independent supplementary analyses |
 
 **→ See [notebooks/README.md](notebooks/README.md) for detailed dependency chain**
 
@@ -432,5 +495,5 @@ Geochronology, 5, 65–90, https://doi.org/10.5194/gchron-5-65-2023, 2023.
 
 ---
 
-**Last Updated:** March 20, 2026  
+**Last Updated:** July 21, 2026  
 **DOI:** [10.5281/zenodo.18429716](https://doi.org/10.5281/zenodo.18429716)

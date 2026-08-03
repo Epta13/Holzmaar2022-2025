@@ -1,0 +1,187 @@
+---
+title: "Combined Figure: Discussion Plot and RDA"
+output: html_notebook
+---
+
+# Combined Figure Creation
+
+This notebook combines:
+- Panel A: discussion_multiplot_v2_with_pigments_panel.png (2/3 A4 width = 14 cm)
+- Panel B: RDA1-2_pigments_PolZ_communities_publication.png (1/3 A4 width = 7 cm)
+
+Both panels at 1/3 A4 height (9.9 cm), arranged side by side.
+
+```{r setup}
+library(png)
+library(grid)
+library(gridExtra)
+```
+
+# Load the Images
+
+```{r load-images}
+# Load the two PNG files - using the panel-sized version of discussion plot
+discussion_img <- readPNG("../figs/discussion_multiplot_v2_with_pigments_panel.png")
+rda_img <- readPNG("../figs/RDA1-2_pigments_PolZ_communities_publication.png")
+```
+
+# Create Combined Figure
+
+```{r combined-figure, fig.width=21/2.54, fig.height=7/2.54}
+# A4 width = 21 cm, height for 1/3 = ~7 cm (A4 height is 29.7 cm, 1/3 ≈ 9.9 cm)
+# But keeping proportional to your data: 1/3 A4 height ≈ 7-10 cm
+# Using 7 cm for better aspect ratio
+
+# Convert images to grobs
+discussion_grob <- rasterGrob(discussion_img, interpolate = TRUE)
+rda_grob <- rasterGrob(rda_img, interpolate = TRUE)
+
+# Create layout: Panel A (2/3 width) + Panel B (1/3 width)
+# Add panel labels A and B
+grid.arrange(
+  arrangeGrob(discussion_grob, 
+              top = textGrob("A", x = 0.02, hjust = 0, 
+                            gp = gpar(fontsize = 14, fontface = "bold"))),
+  arrangeGrob(rda_grob, 
+              top = textGrob("B", x = 0.02, hjust = 0, 
+                            gp = gpar(fontsize = 14, fontface = "bold"))),
+  ncol = 2,
+  widths = c(2, 1)  # 2/3 and 1/3 proportions
+)
+```
+
+# Save Combined Figure
+
+```{r save-figure}
+# A4 width = 21 cm
+# Height: 1/3 A4 = 9.9 cm (29.7/3)
+
+# Calculate pixels at 300 DPI
+width_cm <- 21
+height_cm <- 9.9  # Exact 1/3 of A4 height
+dpi <- 300
+
+width_px <- width_cm / 2.54 * dpi
+height_px <- height_cm / 2.54 * dpi
+
+png(filename = "../figs/combined_figure_discussion_RDA.png", 
+    width = width_px, height = height_px, units = "px", res = dpi, bg = "transparent")
+
+# Create layout with panel labels (without background boxes)
+grid.newpage()
+
+# Panel A
+pushViewport(viewport(x = 0, y = 0, width = 2/3, height = 1, just = c("left", "bottom")))
+grid.raster(discussion_img, interpolate = TRUE)
+popViewport()
+
+# Panel A label (without background)
+pushViewport(viewport(x = 0.01, y = 0.98, width = 0.05, height = 0.05, just = c("left", "top")))
+grid.text("A", gp = gpar(fontsize = 14, fontface = "bold", col = "black"))
+popViewport()
+
+# Panel B
+pushViewport(viewport(x = 2/3, y = 0, width = 1/3, height = 1, just = c("left", "bottom")))
+grid.raster(rda_img, interpolate = TRUE)
+popViewport()
+
+# Panel B label (without background)
+pushViewport(viewport(x = 2/3 + 0.01, y = 0.98, width = 0.05, height = 0.05, just = c("left", "top")))
+grid.text("B", gp = gpar(fontsize = 14, fontface = "bold", col = "black"))
+popViewport()
+
+dev.off()
+
+cat("Combined figure saved to: ../figs/combined_figure_discussion_RDA.png\n")
+cat(sprintf("Dimensions: %.0f × %.0f pixels (%.1f × %.1f cm at 300 DPI)\n", 
+            width_px, height_px, width_cm, height_cm))
+```
+
+# Alternative Version with Tighter Layout
+
+If you need tighter spacing between panels:
+
+```{r save-figure-tight}
+# Version with minimal spacing between panels
+png(filename = "../figs/combined_figure_discussion_RDA_tight.png", 
+    width = width_px, height = height_px, units = "px", res = dpi)
+
+# Create a viewport layout for more control
+grid.newpage()
+
+# Panel A label
+pushViewport(viewport(x = 0.01, y = 0.98, width = 0.05, height = 0.05, 
+                      just = c("left", "top")))
+grid.text("A", gp = gpar(fontsize = 14, fontface = "bold"))
+popViewport()
+
+# Panel A: Discussion plot (0 to 2/3 of width)
+pushViewport(viewport(x = 0, y = 0, width = 2/3, height = 1, 
+                      just = c("left", "bottom")))
+grid.raster(discussion_img, interpolate = TRUE)
+popViewport()
+
+# Panel B label
+pushViewport(viewport(x = 2/3 + 0.01, y = 0.98, width = 0.05, height = 0.05, 
+                      just = c("left", "top")))
+grid.text("B", gp = gpar(fontsize = 14, fontface = "bold"))
+popViewport()
+
+# Panel B: RDA plot (2/3 to end of width)
+pushViewport(viewport(x = 2/3, y = 0, width = 1/3, height = 1, 
+                      just = c("left", "bottom")))
+grid.raster(rda_img, interpolate = TRUE)
+popViewport()
+
+dev.off()
+
+cat("Tight version saved to: ../figs/combined_figure_discussion_RDA_tight.png\n")
+```
+
+# Custom Dimensions Version
+
+If you need exact 1/3 A4 height (9.9 cm):
+
+```{r save-figure-exact}
+# Exact A4 proportions
+width_cm_exact <- 21
+height_cm_exact <- 29.7 / 3  # Exactly 1/3 of A4 height = 9.9 cm
+
+width_px_exact <- width_cm_exact / 2.54 * dpi
+height_px_exact <- height_cm_exact / 2.54 * dpi
+
+png(filename = "../figs/combined_figure_discussion_RDA_exact.png", 
+    width = width_px_exact, height = height_px_exact, units = "px", res = dpi)
+
+grid.newpage()
+
+# Panel A label
+pushViewport(viewport(x = 0.01, y = 0.98, width = 0.05, height = 0.05, 
+                      just = c("left", "top")))
+grid.text("A", gp = gpar(fontsize = 14, fontface = "bold"))
+popViewport()
+
+# Panel A: Discussion plot
+pushViewport(viewport(x = 0, y = 0, width = 2/3, height = 1, 
+                      just = c("left", "bottom")))
+grid.raster(discussion_img, interpolate = TRUE)
+popViewport()
+
+# Panel B label
+pushViewport(viewport(x = 2/3 + 0.01, y = 0.98, width = 0.05, height = 0.05, 
+                      just = c("left", "top")))
+grid.text("B", gp = gpar(fontsize = 14, fontface = "bold"))
+popViewport()
+
+# Panel B: RDA plot
+pushViewport(viewport(x = 2/3, y = 0, width = 1/3, height = 1, 
+                      just = c("left", "bottom")))
+grid.raster(rda_img, interpolate = TRUE)
+popViewport()
+
+dev.off()
+
+cat("Exact dimensions version saved to: ../figs/combined_figure_discussion_RDA_exact.png\n")
+cat(sprintf("Dimensions: %.0f × %.0f pixels (%.1f × %.1f cm at 300 DPI)\n", 
+            width_px_exact, height_px_exact, width_cm_exact, height_cm_exact))
+```

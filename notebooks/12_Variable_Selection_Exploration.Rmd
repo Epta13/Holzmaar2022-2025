@@ -1,0 +1,266 @@
+---
+title: "Variable Selection Exploration: Correlations and PCA"
+subtitle: "Understanding variable redundancy in external environmental data for RDA"
+output: html_notebook
+---
+
+# Overview
+
+This notebook visualizes the correlation structure and performs PCA on the full set of external environmental variables before variable selection for RDA analysis. This helps justify which variables were removed due to multicollinearity and redundancy.
+
+# Load Required Libraries
+
+```{r message=FALSE, warning=FALSE}
+library("pacman")
+pacman::p_unload(pacman::p_loaded(), character.only = TRUE)
+pacman::p_load("readxl", "dplyr", "tidyr", "ggplot2", "corrplot", "ggbiplot", "factoextra", "vegan", "knitr")
+```
+
+# Load External Dataset
+
+```{r}
+# Load the full external dataset (all variables before VIF filtering)
+ext_full <- read_excel("../data/External_forRDA_pig.xlsx")
+
+# Clean column names
+Names <- colnames(ext_full)
+colnames(ext_full) <- c("age", Names[2:length(Names)])
+
+# Keep all original variables (before filtering)
+cat("Full external dataset dimensions:", nrow(ext_full), "samples ×", ncol(ext_full)-1, "variables\n\n")
+
+cat("Variables included:\n")
+print(colnames(ext_full))
+
+cat("\nVariable summary statistics:\n")
+summary(ext_full[,-1])
+```
+
+# Compute Correlation Matrix
+
+```{r}
+# Calculate correlation matrix for all variables (excluding age)
+ext_vars <- ext_full[, -1]
+cor_matrix <- cor(ext_vars, use = "complete.obs")
+
+cat("Correlation matrix dimensions:", nrow(cor_matrix), "×", ncol(cor_matrix), "\n")
+cat("Number of variable pairs with |r| > 0.7:", sum(abs(cor_matrix[upper.tri(cor_matrix)]) > 0.7), "\n")
+cat("Number of variable pairs with |r| > 0.8:", sum(abs(cor_matrix[upper.tri(cor_matrix)]) > 0.8), "\n")
+
+# Identify highly correlated pairs
+high_cor_pairs <- which(abs(cor_matrix) > 0.7 & upper.tri(cor_matrix), arr.ind = TRUE)
+if(nrow(high_cor_pairs) > 0) {
+  cat("\nHighly correlated variable pairs (|r| > 0.7):\n")
+  for(i in 1:nrow(high_cor_pairs)) {
+    var1 <- rownames(cor_matrix)[high_cor_pairs[i, 1]]
+    var2 <- colnames(cor_matrix)[high_cor_pairs[i, 2]]
+    cor_val <- cor_matrix[high_cor_pairs[i, 1], high_cor_pairs[i, 2]]
+    cat(sprintf("  %s ↔ %s: r = %.3f\n", var1, var2, cor_val))
+  }
+}
+```
+
+# Visualize Correlations with Heatmap
+
+```{r fig.width=10, fig.height=10}
+# Create correlation heatmap
+corrplot(cor_matrix, 
+         method = "circle",
+         type = "upper",
+         order = "hclust",
+         tl.col = "black",
+         tl.srt = 45,
+         tl.cex = 0.8,
+         addCoef.col = "black",
+         number.cex = 0.6,
+         diag = FALSE,
+         outline = TRUE,
+         mar = c(0, 0, 2, 0))
+
+title("Correlation Matrix of External Environmental Variables", cex.main = 1.2, line = 1)
+```
+
+# Compute VIF (Variance Inflation Factor)
+
+```{r}
+# Calculate VIF for all variables
+library(car)
+
+# Fit linear model with all variables
+lm_full <- lm(age ~ ., data = ext_full)
+vif_values <- vif(lm_full)
+
+cat("Variance Inflation Factors (VIF) for all variables:\n")
+vif_df <- data.frame(
+  Variable = names(vif_values),
+  VIF = as.numeric(vif_values)
+) %>%
+  arrange(desc(VIF))
+
+print(vif_df, row.names = FALSE)
+
+cat("\nInterpretation:\n")
+cat("- VIF > 10: High multicollinearity (consider removal)\n")
+cat("- VIF > 5: Moderate multicollinearity (review)\n")
+cat("- VIF < 5: Acceptable\n\n")
+
+# Count problematic variables
+problematic <- sum(vif_values > 10)
+cat("Variables with VIF > 10:", problematic, "\n")
+```
+
+# Perform PCA on Full Dataset
+
+```{r}
+# Standardize variables for PCA
+ext_scaled <- scale(ext_vars, center = TRUE, scale = TRUE)
+
+# Perform PCA
+pca_full <- prcomp(ext_scaled, center = FALSE, scale. = FALSE)
+
+# Examine variance explained
+var_explained <- (pca_full$sdev^2 / sum(pca_full$sdev^2)) * 100
+cum_var_explained <- cumsum(var_explained)
+
+cat("Variance explained by principal components:\n")
+var_table <- data.frame(
+  PC = 1:length(var_explained),
+  Variance_Explained = round(var_explained, 2),
+  Cumulative_Variance = round(cum_var_explained, 2)
+)
+print(head(var_table, 10))
+
+cat("\nNumber of PCs needed to explain:\n")
+cat("- 80% variance:", which(cum_var_explained >= 80)[1], "PCs\n")
+cat("- 90% variance:", which(cum_var_explained >= 90)[1], "PCs\n")
+cat("- 95% variance:", which(cum_var_explained >= 95)[1], "PCs\n")
+```
+
+# Plot Scree Plot
+
+```{r fig.width=8, fig.height=6}
+# Scree plot
+par(mar = c(5, 4, 4, 2) + 0.1)
+plot(1:min(15, length(var_explained)), 
+     var_explained[1:min(15, length(var_explained))],
+     type = "b", 
+     pch = 19, 
+     cex = 1.2,
+     xlab = "Principal Component",
+     ylab = "Variance Explained (%)",
+     main = "Scree Plot: Variance Explained by Principal Components",
+     ylim = c(0, max(var_explained[1:15]) + 5))
+grid(nx = NA, ny = NULL, lty = 2, col = "gray")
+
+# Add cumulative variance line
+plot(1:min(15, length(cum_var_explained)), 
+     cum_var_explained[1:min(15, length(cum_var_explained))],
+     type = "b", 
+     pch = 19,
+     col = "red",
+     cex = 1.2,
+     xlab = "Principal Component",
+     ylab = "Cumulative Variance Explained (%)",
+     main = "Cumulative Variance Explained by Principal Components",
+     ylim = c(0, 100))
+grid(nx = NA, ny = NULL, lty = 2, col = "gray")
+abline(h = c(80, 90, 95), lty = 2, col = c("orange", "blue", "purple"))
+legend("bottomright", legend = c("80%", "90%", "95%"), col = c("orange", "blue", "purple"), lty = 2)
+```
+
+# Plot PCA Biplot (PC1 vs PC2)
+
+```{r fig.width=10, fig.height=8}
+# Create biplot data
+pc1 <- pca_full$x[, 1]
+pc2 <- pca_full$x[, 2]
+
+# Get loadings
+loadings <- pca_full$rotation[, 1:2]
+
+# Create biplot
+plot(pc1, pc2,
+     pch = 19,
+     col = alpha("steelblue", 0.5),
+     cex = 1.5,
+     xlab = paste0("PC1 (", round(var_explained[1], 2), "%)"),
+     ylab = paste0("PC2 (", round(var_explained[2], 2), "%)"),
+     main = "PCA Biplot: Full External Variables",
+     xlim = range(pc1) * 1.3)
+
+# Add variable loadings as arrows
+arrow_scale <- 3
+arrows(0, 0, 
+       loadings[, 1] * arrow_scale, 
+       loadings[, 2] * arrow_scale,
+       length = 0.1, 
+       col = "red", 
+       lwd = 2)
+
+# Add variable labels
+text(loadings[, 1] * arrow_scale * 1.15, 
+     loadings[, 2] * arrow_scale * 1.15,
+     rownames(loadings),
+     col = "red",
+     cex = 0.8,
+     font = 2)
+
+abline(h = 0, v = 0, lty = 2, col = "gray")
+grid()
+```
+
+# Variable Loadings on First Two PCs
+
+```{r}
+# Show loadings for PC1 and PC2
+loadings_table <- data.frame(
+  Variable = rownames(loadings),
+  PC1_Loading = round(loadings[, 1], 3),
+  PC2_Loading = round(loadings[, 2], 3),
+  PC1_Contribution = round(abs(loadings[, 1])^2 * 100 / sum(abs(loadings[, 1])^2), 2),
+  PC2_Contribution = round(abs(loadings[, 2])^2 * 100 / sum(abs(loadings[, 2])^2), 2)
+) %>%
+  arrange(desc(abs(PC1_Loading) + abs(PC2_Loading)))
+
+cat("\nVariable Loadings and Contributions to PC1 and PC2:\n")
+print(loadings_table, row.names = FALSE)
+```
+
+# Document Variable Removal Rationale
+
+```{r}
+# Summary of variable selection decision making
+cat("\n=== VARIABLE SELECTION SUMMARY ===\n\n")
+
+cat("1. MULTICOLLINEARITY ASSESSMENT (VIF Analysis):\n")
+cat("   - Variables with VIF > 10 indicate severe multicollinearity\n")
+cat("   - These should be prioritized for removal\n\n")
+
+cat("2. REDUNDANCY ASSESSMENT (Correlation Analysis):\n")
+cat("   - High correlations (|r| > 0.7) suggest variable redundancy\n")
+cat("   - When two variables are highly correlated, remove one\n")
+cat("   - Keep the variable with stronger relationship to response\n\n")
+
+cat("3. DIMENSIONALITY REDUCTION (PCA):\n")
+cat("   - Current dataset has", ncol(ext_vars), "variables\n")
+cat("   - First 3 PCs explain approximately", round(cum_var_explained[3], 1), "% of variance\n")
+cat("   - This indicates substantial redundancy in the original variables\n\n")
+
+cat("4. FINAL SELECTION STRATEGY:\n")
+cat("   - Remove variables with VIF > 10\n")
+cat("   - Among correlated pairs, keep biological/meaningful variables\n")
+cat("   - Prioritize variables with specific ecological interpretation\n")
+cat("   - Final selection focuses on non-redundant predictors\n")
+```
+
+# Conclusion
+
+This exploration demonstrates the **substantial multicollinearity** present in the full set of external environmental variables. The high VIF values and correlation structure justify the variable selection process used in the RDA analysis notebooks (09, 10, 11), where only a subset of non-redundant variables are retained to:
+
+1. **Reduce noise** from multicollinearity
+2. **Improve model interpretability** by removing redundant predictors
+3. **Enhance statistical reliability** of the canonical analysis
+4. **Focus on independent drivers** of pigment variation
+
+The final selected variables represent orthogonal gradients in the environmental space and provide cleaner interpretation of responses to external drivers.
+

@@ -1,0 +1,431 @@
+---
+title: "Diatom Community Dendrogram with Barplots"
+output: html_notebook
+editor_options:
+  chunk_output_type: inline
+---
+
+# Objective
+
+Create a hierarchical clustering visualization of diatom communities with:
+- Dendrogram showing sample clustering
+- Color bars indicating pollen zone (PolZ) and diatom group (planktonic vs benthic)
+- Stacked barplots showing diatom species composition for each sample
+- Similar structure to heatmap but with composition bars
+
+------------------------------------------------------------------------
+
+# 1. Load Libraries and Data
+
+```{r message=FALSE, warning=FALSE}
+library("pacman")
+pacman::p_load("readxl", "dplyr", "tidyr", "vegan", "dendextend", "colorspace")
+
+cat("✓ All required packages loaded successfully\n")
+```
+
+```{r}
+# Load diatom data from diatoms_Lujan file
+diatoms_raw <- read_excel("../data/SourceData/diatoms_Lujan.xlsx", sheet = "diatoms")
+diatom_names <- read_excel("../data/SourceData/diatoms_Lujan.xlsx", sheet = "diatoms_name")
+
+cat("✓ Diatom data loaded\n")
+cat(sprintf("  - Samples: %d\n", nrow(diatoms_raw)))
+cat(sprintf("  - Species: %d\n", ncol(diatoms_raw)-3))
+cat(sprintf("  - Classification: %d species\n", nrow(diatom_names)))
+```
+
+```{r}
+# Extract metadata and species data
+sample_meta <- diatoms_raw %>% select(1:3) %>% 
+  rename(
+    sample_id = sample,
+    depth_mm = `comp_depth (mm)`,
+    age = mean_VT22
+  )
+
+# Extract diatom species counts (columns 4 onwards)
+diatom_species <- diatoms_raw[, 4:ncol(diatoms_raw)]
+
+# Convert to proportions
+diatom_prop <- sweep(diatom_species, 1, rowSums(diatom_species), "/")
+
+# Remove rows with NAs
+na_rows <- which(rowSums(is.na(diatom_prop)) > 0)
+if(length(na_rows) > 0) {
+  cat(sprintf("Removing %d samples with NA values in diatom composition\n", length(na_rows)))
+  diatom_prop <- diatom_prop[-na_rows, ]
+  sample_meta <- sample_meta[-na_rows, ]
+}
+
+cat("Data preparation complete\n")
+cat(sprintf("  - Sample metadata: %d rows\n", nrow(sample_meta)))
+cat(sprintf("  - Species proportion matrix: %d × %d\n", nrow(diatom_prop), ncol(diatom_prop)))
+```
+
+------------------------------------------------------------------------
+
+# 2. Assign Ecological Groups and Pollen Zones
+
+```{r}
+# Create diatom group classification (planktonic vs benthic)
+species_cats <- sapply(colnames(diatom_species), function(sp) {
+  idx <- which(diatom_names$names == sp)
+  if(length(idx) > 0) {
+    return(diatom_names$cat[idx[1]])
+  } else {
+    return(NA)
+  }
+})
+
+# Create group factor for visualization
+group_colors <- ifelse(species_cats == "P", "#1f77b4", "#ff7f0e")  # Blue for planktonic, Orange for benthic
+
+cat("Species classification:\n")
+cat(sprintf("  - Planktonic: %d\n", sum(species_cats == "P", na.rm=TRUE)))
+cat(sprintf("  - Benthic+Epiphytic: %d\n", sum(species_cats == "B", na.rm=TRUE)))
+```
+
+```{r}
+# Assign pollen zones based on age (simplified classification)
+assign_pollenzone <- function(age) {
+  if(is.na(age)) return(NA)
+  if(age > 14000) return("Pleniglacial")
+  if(age > 13000) return("Bølling")
+  if(age > 12700) return("Allerød")
+  if(age > 11700) return("Younger Dryas")
+  return("Holocene")
+}
+
+sample_meta$PolZ <- sapply(sample_meta$age, assign_pollenzone)
+
+# Define PolZ colors (matching your heatmap)
+polz_color_map <- c(
+  "Pleniglacial" = "#4575b4",
+  "Bølling" = "#d73027",
+  "Allerød" = "#fee090",
+  "Younger Dryas" = "#91bfdb",
+  "Holocene" = "#1a9850"
+)
+
+sample_meta$PolZ_color <- polz_color_map[sample_meta$PolZ]
+
+cat("Pollen zone assignment:\n")
+print(table(sample_meta$PolZ))
+```
+
+```{r}
+# Create group labels (planktonic-dominated vs benthic-dominated)
+# Based on proportions
+benthic_prop <- rowSums(diatom_prop[, which(species_cats == "B")], na.rm=TRUE)
+sample_meta$benthic_index <- benthic_prop / (benthic_prop + rowSums(diatom_prop[, which(species_cats == "P")], na.rm=TRUE))
+sample_meta$group <- ifelse(sample_meta$benthic_index > 0.5, "Benthic-dominated", "Planktonic-dominated")
+
+# Group colors
+group_color_map <- c(
+  "Planktonic-dominated" = "#1f77b4",
+  "Benthic-dominated" = "#ff7f0e"
+)
+sample_meta$group_color <- group_color_map[sample_meta$group]
+
+cat("Sample grouping:\n")
+print(table(sample_meta$group))
+```
+
+------------------------------------------------------------------------
+
+# 3. Hierarchical Clustering
+
+```{r}
+# Perform hierarchical clustering on species composition
+# Using Bray-Curtis distance
+dist_matrix <- vegdist(diatom_prop, method = "bray")
+
+# Hierarchical clustering using complete linkage
+hc <- hclust(dist_matrix, method = "complete")
+
+# Create dendextend dendrogram
+dend <- as.dendrogram(hc)
+
+# Order samples by dendrogram
+sample_order <- order.dendrogram(dend)
+
+# Reorder data
+diatom_prop_ordered <- diatom_prop[sample_order, ]
+sample_meta_ordered <- sample_meta[sample_order, ]
+
+cat("Hierarchical clustering complete\n")
+cat(sprintf("  - Distance metric: Bray-Curtis\n"))
+cat(sprintf("  - Linkage method: Complete\n"))
+```
+
+------------------------------------------------------------------------
+
+# 4. Prepare Top Abundant Species
+
+```{r}
+# Get top species by mean abundance
+mean_abundance <- colMeans(diatom_prop)
+top_n <- 15
+top_species <- names(sort(mean_abundance, decreasing = TRUE)[1:top_n])
+
+cat(sprintf("Top %d most abundant species:\n", top_n))
+for(i in 1:length(top_species)) {
+  cat(sprintf("  %d. %s: %.2f%%\n", i, top_species[i], mean_abundance[top_species[i]]*100))
+}
+
+# Get group classification for top species
+top_species_group <- species_cats[top_species]
+```
+
+------------------------------------------------------------------------
+
+# 5. Create Stratigraphic-Style Dendrogram Figure
+
+```{r fig.width=20, fig.height=14}
+# Create stratigraphic plot with dendrogram on top
+# Layout: [Dendrogram on top]
+#         [Depth axis] [Species bars]
+
+png(filename = sprintf("../figs/Diatom_Dendrogram_Barplot_%s.png", 
+                       format(Sys.time(), "%Y%m%d_%H%M%S")),
+    width = 2000, height = 1400, res = 150)
+
+# Create layout: top=dendrogram, bottom left=depth axis, bottom right=species bars
+layout_matrix <- matrix(c(
+  1, 1, 1, 1, 1, 1, 1, 1,
+  2, 3, 3, 3, 3, 3, 3, 3,
+  2, 3, 3, 3, 3, 3, 3, 3,
+  2, 3, 3, 3, 3, 3, 3, 3,
+  2, 3, 3, 3, 3, 3, 3, 3,
+  2, 3, 3, 3, 3, 3, 3, 3
+), nrow=6, byrow=TRUE)
+
+layout(layout_matrix)
+
+# Panel 1: Dendrogram on top
+par(mar=c(2,4,3,2))
+
+# Create dendrogram with leaves colored by group
+polz_bars <- sample_meta_ordered$PolZ_color
+group_bars <- sample_meta_ordered$group_color
+
+dend_colored <- dendextend::set(dend, "leaves_col", group_bars)
+
+# Plot dendrogram (vertical orientation shown horizontally at top)
+plot(dend_colored, 
+     main="Diatom Community Clustering (Bray-Curtis)",
+     xlab="",
+     ylab="Distance",
+     horiz=FALSE, leaflab="none")
+
+# Panel 2: Depth/Age axis on the left (narrower)
+par(mar=c(5,1,0,0.5))
+plot(NA, xlim=c(0, 1), ylim=c(max(sample_meta_ordered$depth_mm), min(sample_meta_ordered$depth_mm)),
+     xlab="", ylab="Depth (mm)", main="",
+     xaxt="n", cex.lab=0.9)
+axis(2, at=seq(min(sample_meta_ordered$depth_mm), max(sample_meta_ordered$depth_mm), by=500),
+     las=1, cex.axis=0.7)
+
+# Add PolZ colored background bands (narrower zones)
+polz_unique <- unique(sample_meta_ordered[, c("PolZ", "PolZ_color")])
+for(i in 1:nrow(polz_unique)) {
+  zones <- which(sample_meta_ordered$PolZ == polz_unique$PolZ[i])
+  if(length(zones) > 0) {
+    min_depth <- min(sample_meta_ordered$depth_mm[zones])
+    max_depth <- max(sample_meta_ordered$depth_mm[zones])
+    rect(0, min_depth, 1, max_depth, 
+         col=adjustcolor(polz_unique$PolZ_color[i], alpha.f=0.5),
+         border=NA)
+  }
+}
+
+# Panel 3: Species individual bars (like stratigraphic pollen diagram)
+par(mar=c(5,0.5,0,2))
+
+# Create space for all species
+n_species <- length(top_species)
+plot(NA, xlim=c(0, n_species), ylim=c(max(sample_meta_ordered$depth_mm), min(sample_meta_ordered$depth_mm)),
+     xlab="", ylab="", xaxt="n", yaxt="n", main="")
+
+# Draw species bars
+for(sp_idx in 1:n_species) {
+  species_col <- top_species[sp_idx]
+  species_abund <- diatom_prop_ordered[, species_col]
+  
+  # Scale abundance to width (normalized by max)
+  scaled_abund <- (species_abund / max(species_abund)) * 0.8
+  
+  # Draw polygon for each species showing abundance profile
+  for(i in 1:nrow(diatom_prop_ordered)) {
+    depth <- sample_meta_ordered$depth_mm[i]
+    left <- (sp_idx - 1) + 0.1
+    right <- left + scaled_abund[i]
+    
+    # Color by group type
+    species_group <- species_cats[species_col]
+    sp_color <- ifelse(species_group == "P", "#1f77b4", "#ff7f0e")
+    
+    polygon(c(left, right, right, left),
+            c(depth-10, depth-10, depth+10, depth+10),
+            col=sp_color, border=NA, alpha=0.7)
+  }
+  
+  # Add species name at top
+  text(sp_idx - 0.5, min(sample_meta_ordered$depth_mm) - 150, 
+       species_col, srt=45, adj=c(0, 0.5), cex=0.7, xpd=TRUE)
+  
+  # Add vertical line between species
+  lines(c(sp_idx, sp_idx), 
+        c(min(sample_meta_ordered$depth_mm), max(sample_meta_ordered$depth_mm)),
+        col="lightgray", lwd=0.5)
+}
+
+dev.off()
+
+cat("✓ Stratigraphic figure saved\n")
+```
+
+------------------------------------------------------------------------
+
+# 6. Create Alternative PDF Version
+
+```{r fig.width=20, fig.height=14}
+pdf(file = sprintf("../figs/Diatom_Dendrogram_Barplot_%s.pdf", 
+                   format(Sys.time(), "%Y%m%d_%H%M%S")),
+    width = 20, height = 14)
+
+# Create layout: top=dendrogram, bottom left=depth axis, bottom right=species bars
+layout_matrix <- matrix(c(
+  1, 1, 1, 1, 1, 1, 1, 1,
+  2, 3, 3, 3, 3, 3, 3, 3,
+  2, 3, 3, 3, 3, 3, 3, 3,
+  2, 3, 3, 3, 3, 3, 3, 3,
+  2, 3, 3, 3, 3, 3, 3, 3,
+  2, 3, 3, 3, 3, 3, 3, 3
+), nrow=6, byrow=TRUE)
+
+layout(layout_matrix)
+
+# Panel 1: Dendrogram on top
+par(mar=c(2,4,3,2))
+
+# Create dendrogram with leaves colored by group
+polz_bars <- sample_meta_ordered$PolZ_color
+group_bars <- sample_meta_ordered$group_color
+
+dend_colored <- dendextend::set(dend, "leaves_col", group_bars)
+
+# Plot dendrogram (vertical orientation shown horizontally at top)
+plot(dend_colored, 
+     main="Diatom Community Clustering (Bray-Curtis)",
+     xlab="",
+     ylab="Distance",
+     horiz=FALSE, leaflab="none")
+
+# Panel 2: Depth/Age axis on the left (narrower)
+par(mar=c(5,1,0,0.5))
+plot(NA, xlim=c(0, 1), ylim=c(max(sample_meta_ordered$depth_mm), min(sample_meta_ordered$depth_mm)),
+     xlab="", ylab="Depth (mm)", main="",
+     xaxt="n", cex.lab=0.9)
+axis(2, at=seq(min(sample_meta_ordered$depth_mm), max(sample_meta_ordered$depth_mm), by=500),
+     las=1, cex.axis=0.7)
+
+# Add PolZ colored background bands (narrower zones)
+polz_unique <- unique(sample_meta_ordered[, c("PolZ", "PolZ_color")])
+for(i in 1:nrow(polz_unique)) {
+  zones <- which(sample_meta_ordered$PolZ == polz_unique$PolZ[i])
+  if(length(zones) > 0) {
+    min_depth <- min(sample_meta_ordered$depth_mm[zones])
+    max_depth <- max(sample_meta_ordered$depth_mm[zones])
+    rect(0, min_depth, 1, max_depth, 
+         col=adjustcolor(polz_unique$PolZ_color[i], alpha.f=0.5),
+         border=NA)
+  }
+}
+
+# Panel 3: Species individual bars (like stratigraphic pollen diagram)
+par(mar=c(5,0.5,0,2))
+
+# Create space for all species
+n_species <- length(top_species)
+plot(NA, xlim=c(0, n_species), ylim=c(max(sample_meta_ordered$depth_mm), min(sample_meta_ordered$depth_mm)),
+     xlab="", ylab="", xaxt="n", yaxt="n", main="")
+
+# Draw species bars
+for(sp_idx in 1:n_species) {
+  species_col <- top_species[sp_idx]
+  species_abund <- diatom_prop_ordered[, species_col]
+  
+  # Scale abundance to width (normalized by max)
+  scaled_abund <- (species_abund / max(species_abund)) * 0.8
+  
+  # Draw polygon for each species showing abundance profile
+  for(i in 1:nrow(diatom_prop_ordered)) {
+    depth <- sample_meta_ordered$depth_mm[i]
+    left <- (sp_idx - 1) + 0.1
+    right <- left + scaled_abund[i]
+    
+    # Color by group type
+    species_group <- species_cats[species_col]
+    sp_color <- ifelse(species_group == "P", "#1f77b4", "#ff7f0e")
+    
+    polygon(c(left, right, right, left),
+            c(depth-10, depth-10, depth+10, depth+10),
+            col=sp_color, border=NA, alpha=0.7)
+  }
+  
+  # Add species name at top
+  text(sp_idx - 0.5, min(sample_meta_ordered$depth_mm) - 150, 
+       species_col, srt=45, adj=c(0, 0.5), cex=0.7, xpd=TRUE)
+  
+  # Add vertical line between species
+  lines(c(sp_idx, sp_idx), 
+        c(min(sample_meta_ordered$depth_mm), max(sample_meta_ordered$depth_mm)),
+        col="lightgray", lwd=0.5)
+}
+
+dev.off()
+
+cat("✓ PDF figure saved\n")
+```
+
+------------------------------------------------------------------------
+
+# 7. Summary Statistics
+
+```{r}
+cat("════════════════════════════════════════════\n")
+cat("ANALYSIS SUMMARY\n")
+cat("════════════════════════════════════════════\n\n")
+
+cat("Dataset:\n")
+cat(sprintf("  - Total samples: %d\n", nrow(sample_meta)))
+cat(sprintf("  - Diatom species: %d\n", ncol(diatom_species)))
+cat(sprintf("  - Depth range: %.2f - %.2f mm\n", min(sample_meta$depth_mm), max(sample_meta$depth_mm)))
+
+cat("\nSample Classification:\n")
+for(polz in unique(sample_meta$PolZ)) {
+  n <- sum(sample_meta$PolZ == polz)
+  cat(sprintf("  - %s: %d samples\n", polz, n))
+}
+
+cat("\nCommunity Type:\n")
+for(group in unique(sample_meta$group)) {
+  n <- sum(sample_meta$group == group)
+  cat(sprintf("  - %s: %d samples\n", group, n))
+}
+
+cat("\nTop 15 Species (by mean abundance):\n")
+for(i in 1:length(top_species)) {
+  cat(sprintf("  %2d. %-40s (%.2f%%, %s)\n", 
+              i, top_species[i], 
+              mean_abundance[top_species[i]]*100,
+              top_species_group[i]))
+}
+
+cat("\n✓ Analysis complete!\n")
+cat("  - Figure saved: ../figs/Diatom_Dendrogram_Barplot_[timestamp].png\n")
+cat("  - PDF saved: ../figs/Diatom_Dendrogram_Barplot_[timestamp].pdf\n")
+```
+

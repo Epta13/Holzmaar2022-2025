@@ -1,0 +1,974 @@
+---
+title: "Supplementary Pigment Plots"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+setwd("~/Holzmaar/Holzmaar2022-2025")
+```
+
+# Load required packages
+
+```{r}
+library("rioja")
+library("ggplot2")
+library("readxl")
+library("dplyr")
+library("tidyr")
+library("cowplot")
+library("latex2exp")
+library("vegan")
+library("janitor")
+```
+
+# Load pigment data
+
+```{r}
+# Load raw pigment concentrations (not transformed)
+pig_raw <- read_excel("../data/Pig_clean.xlsx")
+
+# Load pigment data with depth/age
+pig_with_meta <- read_excel("../data/pig_alr.xlsx", sheet="Sheet 1")
+
+# Combine them
+plot_data <- data.frame(
+  depth = pig_with_meta$depth,
+  age = pig_with_meta$age,
+  Chla = pig_raw$Chla,
+  Pheo = pig_raw$PhphT
+)
+
+# Remove NA and zero values for ratio calculation
+plot_data_clean <- plot_data %>%
+  filter(Chla > 0 & Pheo > 0) %>%
+  mutate(Ratio = Chla / Pheo) %>%
+  arrange(depth)
+
+cat("Data Summary:\n")
+cat(sprintf("Samples: %d\n", nrow(plot_data_clean)))
+cat(sprintf("Chl-a range: %.2f - %.2f µg/g\n", min(plot_data_clean$Chla), max(plot_data_clean$Chla)))
+cat(sprintf("Pheophytin range: %.2f - %.2f µg/g\n", min(plot_data_clean$Pheo), max(plot_data_clean$Pheo)))
+cat(sprintf("Ratio range: %.3f - %.3f\n", min(plot_data_clean$Ratio), max(plot_data_clean$Ratio)))
+cat(sprintf("OM Ratio MIN: %.4f\n", min(plot_data_clean$Ratio)))
+cat(sprintf("OM Ratio MAX: %.4f\n\n", max(plot_data_clean$Ratio)))
+```
+
+# Prepare data for stratigraphic plot
+
+```{r}
+# Load full pigment dataset for stratigraphic plot
+LowRes_all <- read_excel("../data/SourceData/LR_data.xlsx")
+
+# Extract pigment columns
+LowRes_pig_d <- select(LowRes_all, 1, 25:111)
+
+# Remove NA values
+LR_pig <- na.omit(LowRes_pig_d)
+depth_pig <- LR_pig[, 1]
+
+# Function to remove columns with high proportion of zeros
+remove_high_zero_columns <- function(data) {
+  prop_zeros <- colMeans(data == 0)
+  data[, prop_zeros <= 0.95]
+}
+
+# Remove columns with >95% zeros
+df_pig <- as.data.frame(remove_high_zero_columns(LR_pig))
+
+cat("Pigment dataset:\n")
+cat(sprintf("Samples: %d\n", nrow(df_pig)))
+cat(sprintf("Pigment variables: %d\n", ncol(df_pig) - 1))
+
+# Debug: Check for near-zero variance and mostly-NA columns
+cat("\nDetailed pigment column check:\n")
+for(i in 2:min(15, ncol(df_pig))) {
+  col_data <- df_pig[[i]]
+  n_zeros <- sum(col_data == 0, na.rm = TRUE)
+  n_nas <- sum(is.na(col_data))
+  pct_zero <- 100 * n_zeros / length(col_data)
+  col_max <- max(col_data, na.rm = TRUE)
+  col_mean <- mean(col_data, na.rm = TRUE)
+  cat(sprintf("  %s: zeros=%.1f%%, NAs=%d, max=%.2f, mean=%.4f\n", 
+              names(df_pig)[i], pct_zero, as.integer(n_nas), col_max, col_mean))
+}
+```
+
+# Stratigraphic plot: All pigments
+
+```{r}
+# Convert to percentages
+perc_pig <- adorn_percentages(df_pig[, 2:ncol(df_pig)], denominator = "row", na.rm = TRUE)
+perc_100 <- perc_pig * 100
+
+# Remove pigments where total abundance is less than 5%
+ma.sum <- colSums(perc_100)
+df_pig_perc <- perc_100[, which(ma.sum > 5)]
+
+cat(sprintf("Pigments > 5%% total abundance: %d\n", ncol(df_pig_perc)))
+cat("\nAll pigments passing 5% threshold:\n")
+pigments_above_threshold <- names(df_pig_perc)
+for(i in seq_along(pigments_above_threshold)) {
+  cat(sprintf("  %2d. %s (total: %.2f%%)\n", i, pigments_above_threshold[i], ma.sum[pigments_above_threshold[i]]))
+}
+
+# List of pigments being plotted
+plotted_pigments <- c("Fuco", "Alfa_car", "Echi1", "Diadi", "Canta", "Zeax", "Lute", "OH_Sph.ene", "Isore", "Chloxant", "Okenone", "PhphT", "PhideT")
+cat("\n\nPigments currently being plotted:\n")
+for(i in seq_along(plotted_pigments)) {
+  cat(sprintf("  %2d. %s\n", i, plotted_pigments[i]))
+}
+
+# Check for missing pigments
+missing_pigments <- setdiff(pigments_above_threshold, plotted_pigments)
+if(length(missing_pigments) > 0) {
+  cat("\n⚠ WARNING: Pigments above 5% threshold but NOT plotted:\n")
+  for(pig in missing_pigments) {
+    cat(sprintf("  - %s (total: %.2f%%)\n", pig, ma.sum[pig]))
+  }
+} else {
+  cat("\n✓ All pigments above 5% threshold are being plotted!\n")
+}
+```
+
+```{r}
+# Standardize data for cluster analysis
+data <- as.matrix(df_pig_perc)
+data_standardized <- data
+for(i in 1:ncol(data_standardized)) {
+  data_standardized[, i] <- data_standardized[, i] / sd(data_standardized[, i])
+}
+
+# Perform hierarchical cluster analysis
+ma.dist <- vegdist(data_standardized, method = "euclidean", binary = FALSE, diag = FALSE, upper = FALSE, na.rm = FALSE)
+ma.chclust <- chclust(ma.dist, method = "coniss")
+```
+
+```{r}
+# Define color scheme for pigments
+# Adjust colors based on pigment types
+p.col <- c(rep("darkgreen", times = 5), rep("green", times = 5), 
+           rep("orange", times = 5), rep("red", times = 5), 
+           rep("purple", times = 5))
+
+# Set depth axis
+y.scale <- as.numeric(depth_pig[[1]])
+
+# Create stratigraphic plot with all pigments
+pig.plot <- strat.plot(df_pig_perc, 
+                        yvar = y.scale, 
+                        y.tks = y.scale, 
+                        y.rev = TRUE, 
+                        plot.line = FALSE, 
+                        plot.poly = TRUE, 
+                        plot.bar = TRUE, 
+                        col.bar = "black", 
+                        col.poly = p.col, 
+                        col.poly.line = "black", 
+                        scale.percent = TRUE, 
+                        xSpace = 0.01, 
+                        x.pc.inc = 5, 
+                        x.pc.lab = TRUE, 
+                        x.pc.omit0 = TRUE, 
+                        srt.xlabel = 45, 
+                        las = 2, 
+                        col.exag = "auto", 
+                        exag.mult = 3, 
+                        exag.alpha = 0.50, 
+                        title = "Holzmaar Pigments - All Types", 
+                        ylabel = "Depth (cm)", 
+                        clust = ma.chclust)
+
+# Add cluster zones
+addClustZone(pig.plot, ma.chclust, nZone = 5, lwd = 1.5, lty = 2, col = "grey25")
+```
+
+# Data preparation: Convert µmol to µg using molecular weights
+
+```{r}
+# First, let's identify all sheets in LR_data.xlsx
+library(readxl)
+
+all_sheets <- excel_sheets("../data/SourceData/LR_data.xlsx")
+cat("Available sheets in LR_data.xlsx:\n")
+for(i in seq_along(all_sheets)) {
+  cat(sprintf("  %d. %s\n", i, all_sheets[i]))
+}
+```
+
+```{r}
+# Load molecular weights table
+mw_table_raw <- read_excel("../data/SourceData/LR_data.xlsx", sheet = "Pig conversion")
+cat("Molecular weights sheet loaded:\n")
+cat(sprintf("  Total entries: %d\n", nrow(mw_table_raw)))
+cat(sprintf("  Column names: %s\n", paste(names(mw_table_raw), collapse = ", ")))
+
+cat("\n=== First 10 rows of raw data ===\n")
+print(head(mw_table_raw, 10))
+
+# Select columns 2 and 3 (Name and molecular weight g/mol), then rename
+mw_table <- mw_table_raw %>%
+  select(2, 3) %>%
+  setNames(c("pigment_name", "molecular_weight")) %>%
+  filter(!is.na(molecular_weight)) %>%
+  mutate(molecular_weight = as.numeric(molecular_weight))
+
+cat("\n=== After proper renaming and conversion ===\n")
+cat(sprintf("  Pigments with valid weights: %d\n", sum(!is.na(mw_table$molecular_weight))))
+cat("  First 10 entries:\n")
+print(head(mw_table, 10))
+
+# Create named vector for molecular weight lookup 
+mw_vector <- setNames(mw_table$molecular_weight, mw_table$pigment_name)
+
+cat("\nSample of molecular weight vector:\n")
+print(head(mw_vector, 15))
+cat("\nChecking for key pigments in MW vector:\n")
+cat(sprintf("  PhphT present: %s\n", "PhphT" %in% names(mw_vector)))
+cat(sprintf("  PhideT present: %s\n", "PhideT" %in% names(mw_vector)))
+
+# If PhphT and PhideT don't have MWs, add them (these are total pheophytines/pheophorbides)
+if (!("PhphT" %in% names(mw_vector))) {
+  mw_vector["PhphT"] <- 893.5  # Approximate MW for Pheophytin a
+  cat("  Added PhphT with MW = 893.5\n")
+}
+if (!("PhideT" %in% names(mw_vector))) {
+  mw_vector["PhideT"] <- 879.5  # Approximate MW for Pheophorbide a
+  cat("  Added PhideT with MW = 879.5\n")
+}
+
+# Define metadata columns
+metadata_cols <- c("comp_depth_mm", "mean_VT22")
+
+# Load OM-normalized pigment data
+LR_all_raw <- read_excel("../data/SourceData/LR_data.xlsx", sheet = "Redox_Dia_PigOM")
+cat("\n\nOM dataset (Redox_Dia_PigOM) columns:\n")
+print(names(LR_all_raw))
+cat("Total columns:", length(names(LR_all_raw)), "\n")
+
+# Check if PhphT and PhideT exist
+cat("\nChecking for pheophytin/pheophorbide columns:\n")
+cat(sprintf("  PhphT in OM: %s\n", "PhphT" %in% names(LR_all_raw)))
+cat(sprintf("  PhideT in OM: %s\n", "PhideT" %in% names(LR_all_raw)))
+
+# Print all columns that might be pheophytins or pheophorbides
+pheo_cols <- grep("pheo|Pheo|Phph|Phid", names(LR_all_raw), ignore.case = TRUE, value = TRUE)
+cat("Columns matching 'pheo' pattern:", paste(pheo_cols, collapse = ", "), "\n")
+
+# Filter to keep metadata + pigments with MWs + PhphT and PhideT if they exist
+cols_to_keep <- c(metadata_cols, names(mw_vector))
+cols_to_keep_adjusted <- cols_to_keep[cols_to_keep %in% names(LR_all_raw)]
+
+# Add PhphT and PhideT even if not in mw_vector columns originally
+if("PhphT" %in% names(LR_all_raw) && !("PhphT" %in% cols_to_keep_adjusted)) {
+  cols_to_keep_adjusted <- c(cols_to_keep_adjusted, "PhphT")
+  cat("\n✓ Adding PhphT to OM dataset\n")
+}
+if("PhideT" %in% names(LR_all_raw) && !("PhideT" %in% cols_to_keep_adjusted)) {
+  cols_to_keep_adjusted <- c(cols_to_keep_adjusted, "PhideT")
+  cat("✓ Adding PhideT to OM dataset\n")
+}
+
+cat("\nFinal columns to select from OM dataset:\n")
+print(cols_to_keep_adjusted)
+
+LR_all <- LR_all_raw %>% 
+  select(all_of(cols_to_keep_adjusted))
+
+cat("\nOM dataset after selection has columns:", paste(names(LR_all), collapse = ", "), "\n")
+
+depth_LRall <- (LR_all$comp_depth_mm)/1000
+
+# Load bulk pigment data
+LR_all_bulk_raw <- read_excel("../data/SourceData/LR_all_bulk.xlsx")
+
+cat("\n\nBulk dataset (LR_all_bulk) columns:\n")
+print(names(LR_all_bulk_raw))
+cat("Total columns:", length(names(LR_all_bulk_raw)), "\n")
+
+pheo_cols_bulk <- grep("pheo|Pheo|Phph|Phid", names(LR_all_bulk_raw), ignore.case = TRUE, value = TRUE)
+cat("Columns matching 'pheo' pattern:", paste(pheo_cols_bulk, collapse = ", "), "\n")
+
+# Filter to keep metadata + pigments with MWs + PhphT and PhideT if they exist  
+cols_to_keep_bulk <- cols_to_keep[cols_to_keep %in% names(LR_all_bulk_raw)]
+
+if("PhphT" %in% names(LR_all_bulk_raw) && !("PhphT" %in% cols_to_keep_bulk)) {
+  cols_to_keep_bulk <- c(cols_to_keep_bulk, "PhphT")
+  cat("\n✓ Adding PhphT to bulk dataset\n")
+}
+if("PhideT" %in% names(LR_all_bulk_raw) && !("PhideT" %in% cols_to_keep_bulk)) {
+  cols_to_keep_bulk <- c(cols_to_keep_bulk, "PhideT")
+  cat("✓ Adding PhideT to bulk dataset\n")
+}
+
+cat("\nFinal columns to select from bulk dataset:\n")
+print(cols_to_keep_bulk)
+
+LR_all_bulk <- LR_all_bulk_raw %>% 
+  select(all_of(cols_to_keep_bulk))
+
+cat("\nBulk dataset after selection has columns:", paste(names(LR_all_bulk), collapse = ", "), "\n")
+
+depth_LRall_bulk <- (LR_all_bulk$comp_depth_mm)/1000
+
+cat("\nData filtered to pigments with molecular weights:\n")
+cat(sprintf("  LR_all (OM): %d rows × %d columns\n", nrow(LR_all), ncol(LR_all)))
+cat(sprintf("  LR_all_bulk (bulk): %d rows × %d columns\n", nrow(LR_all_bulk), ncol(LR_all_bulk)))
+
+# Function to convert nmol/g to µg/g using molecular weights
+# Conversion: µg/g = (nmol/g × MW(g/mol)) / 1000
+convert_umol_to_ug <- function(data, mw_vector, metadata_cols = c("comp_depth_mm", "mean_VT22")) {
+  # Identify pigment columns (all columns except metadata)
+  pigment_cols <- setdiff(names(data), metadata_cols)
+  
+  # Create a copy for conversion
+  data_converted <- data
+  
+  cat("  Conversion details:\n")
+  # Convert each pigment column
+  for(pigment in pigment_cols) {
+    if(pigment %in% names(mw_vector)) {
+      # Get molecular weight (g/mol) and ensure it's numeric
+      mw <- as.numeric(mw_vector[pigment])
+      
+      # Get original data
+      data_orig <- data[[pigment]]
+      cat(sprintf("    %s:\n", pigment))
+      cat(sprintf("      Original class: %s\n", class(data_orig)))
+      cat(sprintf("      Original NA count: %d (of %d values)\n", sum(is.na(data_orig)), length(data_orig)))
+      
+      # Show first few original values
+      cat(sprintf("      First 5 original values: %s\n", paste(head(data_orig, 5), collapse = ", ")))
+      
+      # Try to convert to numeric
+      data_numeric <- as.numeric(data_orig)
+      cat(sprintf("      After as.numeric - class: %s, NA count: %d\n", class(data_numeric), sum(is.na(data_numeric))))
+      cat(sprintf("      First 5 converted values: %s\n", paste(head(data_numeric, 5), collapse = ", ")))
+      
+      # Check if mw is valid
+      cat(sprintf("      MW value: %s (class: %s)\n", mw, class(mw)))
+      
+      # Do conversion with explicit checks
+      if(!is.na(mw) && !all(is.na(data_numeric))) {
+        result <- (data_numeric * mw) / 1000  # nmol/g × MW / 1000 = µg/g
+        cat(sprintf("      Multiplication result - class: %s, NA count: %d\n", class(result), sum(is.na(result))))
+        cat(sprintf("      First 5 result values: %s\n", paste(head(result, 5), collapse = ", ")))
+        data_converted[[pigment]] <- result
+      } else {
+        cat(sprintf("      ⚠ Skipping multiplication: mw is NA or all data is NA\n"))
+      }
+    } else {
+      cat(sprintf("    ⚠ %s not found in molecular weights\n", pigment))
+    }
+  }
+  
+  return(data_converted)
+}
+
+# Convert OM data
+cat("\nConverting OM data (nmol/g → µg/g):\n")
+cat(sprintf("Input data - rows: %d, cols: %d\n", nrow(LR_all), ncol(LR_all)))
+cat("Column names in LR_all:\n")
+print(names(LR_all))
+
+LR_all_ug <- convert_umol_to_ug(LR_all, mw_vector)
+
+cat("\nOutput OM data:\n")
+cat(sprintf("  Rows: %d, Cols: %d\n", nrow(LR_all_ug), ncol(LR_all_ug)))
+print(head(LR_all_ug, 3))
+
+# Convert bulk data
+cat("\n\nConverting bulk data (nmol/g → µg/g):\n")
+cat(sprintf("Input data - rows: %d, cols: %d\n", nrow(LR_all_bulk), ncol(LR_all_bulk)))
+cat("Column names in LR_all_bulk:\n")
+print(names(LR_all_bulk))
+
+LR_all_bulk_ug <- convert_umol_to_ug(LR_all_bulk, mw_vector)
+
+cat("\nOutput Bulk data:\n")
+cat(sprintf("  Rows: %d, Cols: %d\n", nrow(LR_all_bulk_ug), ncol(LR_all_bulk_ug)))
+print(head(LR_all_bulk_ug, 3))
+
+cat("\n✓ Data conversion complete\n")
+```
+
+# Diagnostic: Check data loading and conversion
+
+```{r}
+cat("=== Data Verification After Conversion ===\n\n")
+
+cat("OM data (LR_all_ug) - converted to µg:\n")
+cat(sprintf("  Dimensions: %d rows × %d columns\n", nrow(LR_all_ug), ncol(LR_all_ug)))
+cat(sprintf("  Sample pigment values (first row):\n"))
+sample_cols <- intersect(c("Fuco", "Alfa_car", "Zeax", "PhphT", "PhideT"), names(LR_all_ug))
+for(col in sample_cols) {
+  cat(sprintf("    %s: %.4f µg\n", col, LR_all_ug[[col]][1]))
+}
+
+cat("\nBulk data (LR_all_bulk_ug) - converted to µg:\n")
+cat(sprintf("  Dimensions: %d rows × %d columns\n", nrow(LR_all_bulk_ug), ncol(LR_all_bulk_ug)))
+cat(sprintf("  Sample pigment values (first row):\n"))
+for(col in sample_cols) {
+  if(col %in% names(LR_all_bulk_ug)) {
+    cat(sprintf("    %s: %.4f µg\n", col, LR_all_bulk_ug[[col]][1]))
+  }
+}
+
+cat("\nKey metadata columns:\n")
+cat(sprintf("  LR_all_ug - mean_VT22: %s\n", ifelse("mean_VT22" %in% names(LR_all_ug), "✓ present", "✗ missing")))
+cat(sprintf("  LR_all_bulk_ug - mean_VT22: %s\n", ifelse("mean_VT22" %in% names(LR_all_bulk_ug), "✓ present", "✗ missing")))
+
+# Create pigment subset for plotting - select only pigments with valid molecular weights
+# Remove pigments that are all zero (no molecular weight available)
+metadata_cols <- c("comp_depth_mm", "mean_VT22")
+pigment_cols <- setdiff(names(LR_all_bulk_ug), metadata_cols)
+
+# Keep only pigments with non-zero values (i.e., they had molecular weights)
+non_zero_pigments <- pigment_cols[colSums(LR_all_bulk_ug[, pigment_cols] != 0, na.rm = TRUE) > 0]
+
+# Create subset with metadata + valid pigments
+pig_all_bulk_ug <- as.data.frame(select(LR_all_bulk_ug, all_of(metadata_cols), all_of(non_zero_pigments)))
+
+cat("\nPigment subset (pig_all_bulk_ug):\n")
+cat(sprintf("  Dimensions: %d rows × %d columns\n", nrow(pig_all_bulk_ug), ncol(pig_all_bulk_ug)))
+cat(sprintf("  Metadata: %s\n", paste(metadata_cols, collapse = ", ")))
+cat(sprintf("  Pigments with valid data: %d\n", length(non_zero_pigments)))
+cat(sprintf("  First 10 column names: %s\n", paste(names(pig_all_bulk_ug)[1:min(10, ncol(pig_all_bulk_ug))], collapse = ", ")))
+
+cat("\n✓ All data prepared and ready for plotting\n")
+```
+
+```         
+
+# Create pigment plots using consistent style from quick_diatom_plotting
+Fuco <- ggplot(LR_all_ug , aes(y= Fuco, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "orange")+
+  scale_x_reverse(breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right') +
+  theme_classic() +
+  coord_flip() +
+  labs(title = " ", y = "Fucoxanthine (µg)", x = " ") +
+  theme(legend.position="none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+Alpha <- ggplot(LR_all_ug , aes(y= Alfa_car, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "goldenrod")+
+  scale_x_reverse(breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right') +
+  theme_classic() +
+  coord_flip() +
+  labs(title = " ", y = "α-Carotene (µg)", x = " ") +
+  theme(legend.position="none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+Echi <- ggplot(LR_all_ug , aes(y= Echi1, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "goldenrod")+
+  scale_x_reverse(breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right') +
+  theme_classic() +
+  coord_flip() +
+  labs(title = " ", y = "Echinenone (µg)", x = " ") +
+  theme(legend.position="none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+Diato <- ggplot(LR_all_ug , aes(y= Diadi, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "orangered")+
+  scale_x_reverse(breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right') +
+  theme_classic() +
+  coord_flip() +
+  labs(title = " ", y = "Diadinoxanthine (µg)", x = " ") +
+  theme(legend.position="none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+Canta <- ggplot(LR_all_ug , aes(y= Canta, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "orangered")+
+  scale_x_reverse(breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right') +
+  theme_classic() +
+  coord_flip() +
+  labs(title = " ", y = "Canthaxanthine (µg)", x = " ") +
+  theme(legend.position="none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+Zea <- ggplot(LR_all_ug , aes(y= Zeax, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "darkgoldenrod3")+
+  scale_x_reverse(breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right') +
+  theme_classic() +
+  coord_flip() +
+  labs(title = " ", y = "Zeaxanthine (µg)", x = " ") +
+  theme(legend.position="none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+Lut <- ggplot(LR_all_ug , aes(y= Lute, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "darkgoldenrod3")+
+  scale_x_reverse(breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right') +
+  theme_classic() +
+  coord_flip() +
+  labs(title = " ", y = "Lutein (µg)", x = " ") +
+  theme(legend.position="none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+OHSp <- ggplot(LR_all_ug , aes(y= OH_Sph.ene, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "darkgoldenrod3")+
+  scale_x_reverse(breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right') +
+  theme_classic() +
+  coord_flip() +
+  labs(title = " ", y = "OH-Spheroidene (µg)", x = " ") +
+  theme(legend.position="none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+Iso <- ggplot(LR_all_ug , aes(y= Isore, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "lightgreen")+
+  scale_x_reverse(breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right') +
+  theme_classic() +
+  coord_flip() +
+  labs(title = " ", y = "Isorenoretine (µg)", x = " ") +
+  theme(legend.position="none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+Chlx <- ggplot(LR_all_ug , aes(y= Chloxant, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "lightgreen")+
+  scale_x_reverse(breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right') +
+  theme_classic() +
+  coord_flip() +
+  labs(title = " ", y = "Chloraxanthine (µg)", x = " ") +
+  theme(legend.position="none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+Oke <- ggplot(LR_all_ug , aes(y= Okenone, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "purple")+
+  scale_x_reverse(breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right') +
+  theme_classic() +
+  coord_flip() +
+  labs(title = " ", y = "Okenone (µg)", x = " ") +
+  theme(legend.position="none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+Phph <- ggplot(LR_all_ug , aes(y= PhphT, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "darkgreen")+
+  scale_x_reverse(breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right') +
+  theme_classic() +
+  coord_flip() +
+  labs(title = " ", y = "Total Pheophytines (µg)", x = " ") +
+  theme(legend.position="none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+Phide <- ggplot(LR_all_ug , aes(y= PhideT, x= mean_VT22))+
+  geom_bar(stat = "identity", width = 25, fill = "darkgreen")+
+  scale_x_reverse(breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right') +
+  theme_classic() +
+  coord_flip() +
+  labs(title = " ", y = "Total Pheophorbides (µg)", x = " ") +
+  theme(legend.position="none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+# Ratio plot (transparent bars, same scale as pigment plots)
+Ratio_plot <- ggplot(plot_data_clean, aes(y = Ratio, x = depth)) +
+  geom_bar(stat = "identity", width = 25, fill = alpha("steelblue", 0.5)) +
+  scale_x_reverse(limits = c(max(plot_data_clean$depth, na.rm=TRUE), min(plot_data_clean$depth, na.rm=TRUE)), breaks = round(seq(min(plot_data_clean$depth, na.rm=TRUE), max(plot_data_clean$depth, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right') +
+  theme_classic() +
+  coord_flip() +
+  labs(title = " ", y = "Chl/Pheo Ratio", x = " ") +
+  theme(legend.position = "none", 
+        axis.ticks.y = element_blank(), 
+        axis.line.y = element_blank(), 
+        axis.text.y = element_blank())
+```
+
+# Pigments overlay (Bulk vs. OM-normalized)
+
+```{r}
+# Overlay plots comparing bulk sediment (LR_all_bulk_ug) with OM-normalized data (LR_all_ug)
+# Both datasets converted from µmol to µg using molecular weights
+# Bulk data shown in saturated color, OM-normalized shown in semi-transparent overlay
+
+# First identify which pigments are available in both datasets (non-zero values)
+metadata_cols <- c("comp_depth_mm", "mean_VT22")
+pigment_cols_om <- setdiff(names(LR_all_ug), metadata_cols)
+pigment_cols_bulk <- setdiff(names(LR_all_bulk_ug), metadata_cols)
+
+# Find pigments with non-zero values in each dataset
+om_pigments_nonzero <- pigment_cols_om[colSums(LR_all_ug[, pigment_cols_om] != 0, na.rm = TRUE) > 0]
+bulk_pigments_nonzero <- pigment_cols_bulk[colSums(LR_all_bulk_ug[, pigment_cols_bulk] != 0, na.rm = TRUE) > 0]
+
+# Find common pigments (those in both datasets with non-zero values)
+common_pigments <- intersect(om_pigments_nonzero, bulk_pigments_nonzero)
+
+# Force include PhphT and PhideT if they exist in either dataset
+if("PhphT" %in% pigment_cols_om | "PhphT" %in% pigment_cols_bulk) {
+  common_pigments <- c(common_pigments, "PhphT")
+}
+if("PhideT" %in% pigment_cols_om | "PhideT" %in% pigment_cols_bulk) {
+  common_pigments <- c(common_pigments, "PhideT")
+}
+common_pigments <- unique(common_pigments)
+
+cat("\nPigments available for overlay plots:\n")
+cat(sprintf("  OM dataset non-zero pigments: %d\n", length(om_pigments_nonzero)))
+cat(sprintf("  Bulk dataset non-zero pigments: %d\n", length(bulk_pigments_nonzero)))
+cat(sprintf("  Common pigments (in both): %d\n", length(common_pigments)))
+cat(sprintf("  List: %s\n", paste(sort(common_pigments), collapse = ", ")))
+
+# Check which columns actually exist in datasets
+cols_in_om <- intersect(names(LR_all_ug), common_pigments)
+cols_in_bulk <- intersect(names(LR_all_bulk_ug), common_pigments)
+
+cat("\nColumns found in OM dataset:", paste(cols_in_om, collapse = ", "), "\n")
+cat("Columns found in bulk dataset:", paste(cols_in_bulk, collapse = ", "), "\n")
+
+# Add missing columns with 0 values if needed
+all_cols_needed <- unique(c(cols_in_om, cols_in_bulk))
+for (col in all_cols_needed) {
+  if (!col %in% names(LR_all_ug)) {
+    LR_all_ug[[col]] <- 0
+  }
+  if (!col %in% names(LR_all_bulk_ug)) {
+    LR_all_bulk_ug[[col]] <- 0
+  }
+}
+
+# Filter datasets to common pigments
+LR_all_ug_overlay <- select(LR_all_ug, all_of(metadata_cols), all_of(all_cols_needed))
+LR_all_bulk_ug_overlay <- select(LR_all_bulk_ug, all_of(metadata_cols), all_of(all_cols_needed))
+
+cat("✓ Overlay datasets have columns:", paste(setdiff(names(LR_all_ug_overlay), metadata_cols), collapse = ", "), "\n")
+
+Fuco2 <- ggplot()+
+  geom_bar(data= LR_all_bulk_ug_overlay, aes(y= Fuco*15, x= mean_VT22), stat = "identity", width = 25, fill = alpha("darkorange",1))+
+  geom_bar(data= LR_all_ug_overlay , aes(y= Fuco, x= mean_VT22), stat = "identity", width = 25, fill = alpha("gold1", 0.5))+
+  scale_x_reverse(limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 50), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /15, name = "Fucoxanthine\n (µg/g bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "Fucoxanthine\n (µg/g OM)", x = "Age (cal yr BP)") +
+  theme(legend.position="none", axis.ticks.y= element_line(), axis.line.y = element_blank(), axis.text.y = element_text(size = 8), axis.title.x.bottom = element_text(color = "darkorange1"), axis.title.x.top = element_text(color = "gold3"))
+
+Alpha2 <- ggplot()+
+  geom_bar(data= LR_all_bulk_ug_overlay , aes(y= Alfa_car*100, x= mean_VT22), stat = "identity", width = 25, fill = "firebrick4")+
+  geom_bar(data= LR_all_ug_overlay , aes(y= Alfa_car, x= mean_VT22), stat = "identity", width = 25, fill = alpha("coral1", 0.5))+
+  scale_x_reverse(limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /100, name = "α-Carotene\n (µg/g bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "α-Carotene\n (µg/g OM)", x = " ") +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "firebrick4"), axis.title.x.top = element_text(color = "coral2"))
+
+Echi2 <- ggplot()+
+  geom_bar(data=LR_all_bulk_ug_overlay , aes(y= Echi1*15, x= mean_VT22), stat = "identity", width = 25, fill = "firebrick4") +
+  geom_bar(data= LR_all_ug_overlay, aes(y= Echi1, x= mean_VT22), stat = "identity", width = 25, fill = alpha("coral1", 0.5))+
+  scale_x_reverse(limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /15, name = "Echinenone\n (µg/g bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "Echinenone\n (µg/g OM)", x = " ") +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "firebrick4"), axis.title.x.top = element_text(color = "coral2"))
+
+Diato2 <- ggplot()+
+  geom_bar(data= LR_all_bulk_ug_overlay , aes(y= Diadi*50, x= mean_VT22), stat = "identity", width = 25, fill = alpha("orangered",1))+
+  geom_bar(data= LR_all_ug_overlay, aes(y= Diadi, x= mean_VT22), stat = "identity", width = 25, fill = alpha("yellow2", 0.5))+
+  scale_x_reverse(limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /50, name = "Diadinoxanthine\n (µg/g bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "Diadinoxanthine\n (µg/g OM)", x = " ") +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "orangered3"), axis.title.x.top = element_text(color = "yellow3"))
+
+Canta2 <- ggplot()+
+  geom_bar(data= LR_all_bulk_ug_overlay , aes(y= Canta*50, x= mean_VT22), stat = "identity", width = 25, fill = "orangered")+
+  geom_bar(data= LR_all_ug_overlay, aes(y= Canta, x= mean_VT22), stat = "identity", width = 25, fill = alpha("yellow", 0.5))+
+  scale_x_reverse(limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /50, name = "Canthaxanthine\n (µg/g bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "Canthaxanthine\n (µg/g OM)", x = " ") +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "orangered3"), axis.title.x.top = element_text(color = "yellow3"))
+
+Zea2 <- ggplot()+
+  geom_bar(data= LR_all_bulk_ug_overlay , aes(y= Zeax*50, x= mean_VT22), stat = "identity", width = 25, fill = "darkorange2")+
+  geom_bar(data= LR_all_ug_overlay, aes(y= Zeax, x= mean_VT22), stat = "identity", width = 25, fill = alpha("gold1", 0.5))+
+  scale_x_reverse(limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /50, name = "Zeaxanthine\n (µg/g bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "Zeaxanthine\n (µg/g OM)", x = " ") +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "darkorange2"), axis.title.x.top = element_text(color = "gold3"))
+
+Lut2 <- ggplot()+
+  geom_bar(data= LR_all_bulk_ug_overlay , aes(y= Lute*50, x= mean_VT22), stat = "identity", width = 25, fill = "darkorange2")+
+  geom_bar(data= LR_all_ug_overlay, aes(y= Lute, x= mean_VT22), stat = "identity", width = 25, fill = alpha("gold1", 0.5))+
+  scale_x_reverse(limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /50, name = "Lutein\n (µg/g bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "Lutein\n (µg/g OM)", x = " ") +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "darkorange2"), axis.title.x.top = element_text(color = "gold3"))
+
+OHSp2 <- ggplot()+
+  geom_bar(data= LR_all_bulk_ug_overlay , aes(y= OH_Sph.ene*50, x= mean_VT22), stat = "identity", width = 25, fill = "darkorange2")+
+  geom_bar(data= LR_all_ug_overlay, aes(y= OH_Sph.ene, x= mean_VT22), stat = "identity", width = 25, fill = alpha("gold1", 0.5))+
+  scale_x_reverse(limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /50, name = "OH-Spheroidene\n (µg/g bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "OH-Spheroidene\n (µg/g OM)", x = " ") +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "darkorange2"), axis.title.x.top = element_text(color = "gold3"))
+
+Iso2 <- ggplot()+
+  geom_bar(data= LR_all_bulk_ug_overlay , aes(y= Isore*15, x= mean_VT22), stat = "identity", width = 25, fill = alpha("springgreen3", 1))+
+  geom_bar(data= LR_all_ug_overlay, aes(y= Isore, x= mean_VT22), stat = "identity", width = 25, fill = alpha("olivedrab1", 0.5))+
+  scale_x_reverse(limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /15, name = "Isorenoretine\n (µg/g bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "Isorenoretine\n (µg/g OM)", x = " ") +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "Springgreen3"), axis.title.x.top = element_text(color = "olivedrab3"))
+
+Chlx2 <- ggplot()+
+  geom_bar(data= LR_all_bulk_ug_overlay , aes(y= Chloxant*15, x= mean_VT22), stat = "identity", width = 25, fill = "springgreen3")+
+  geom_bar(data= LR_all_ug_overlay, aes(y= Chloxant, x= mean_VT22), stat = "identity", width = 25, fill = alpha("olivedrab1", 0.5))+
+  scale_x_reverse(limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /15, name = "Chloraxanthine\n (µg/g bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "Chloraxanthine\n (µg/g OM)", x = " ") +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "springgreen3"), axis.title.x.top = element_text(color = "olivedrab3"))
+
+Oke2 <- ggplot()+
+  geom_bar(data= LR_all_bulk_ug_overlay , aes(y= Okenone*10, x= mean_VT22), stat = "identity", width = 25, fill = "purple3")+
+  geom_bar(data= LR_all_ug_overlay, aes(y= Okenone, x= mean_VT22), stat = "identity", width = 25, fill = alpha("violet", 0.5))+
+  scale_x_reverse(limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /10, name = "Okenone\n (µg/g bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "Okenone\n (µg/g OM)", x = " ") +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "purple3"), axis.title.x.top = element_text(color = "violet"))
+
+
+Chla2 <- ggplot()+
+  geom_bar(data= LR_all_bulk_ug_overlay , aes(y= Chla*15, x= mean_VT22), stat = "identity", width = 25, fill = "darkgreen")+
+  geom_bar(data= LR_all_ug_overlay, aes(y= Chla, x= mean_VT22), stat = "identity", width = 25, fill = alpha("green3", 0.5))+
+  scale_x_reverse(limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /15, name = "Chlorophyll a\n (µg/g bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "Chlorophyll a\n (µg/g OM)", x = " ") +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "darkgreen"), axis.title.x.top = element_text(color = "green3"))
+
+BChl2 <- ggplot()+
+  geom_bar(data= LR_all_bulk_ug_overlay , aes(y= BChl*15, x= mean_VT22), stat = "identity", width = 25, fill = "darkgreen")+
+  geom_bar(data= LR_all_ug_overlay, aes(y= BChl, x= mean_VT22), stat = "identity", width = 25, fill = alpha("green3", 0.5))+
+  scale_x_reverse(limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /15, name = "Bacteriochlorophyll\n (µg/g bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "Bacteriochlorophyll\n (µg/g OM)", x = " ") +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "darkgreen"), axis.title.x.top = element_text(color = "green3"))
+
+
+Phph2 <- ggplot()+
+  geom_bar(data= LR_all_bulk_ug_overlay , aes(y= PhphT*15, x= mean_VT22), stat = "identity", width = 25, fill = "darkgreen")+
+  geom_bar(data= LR_all_ug_overlay, aes(y= PhphT, x= mean_VT22), stat = "identity", width = 25, fill = alpha("green3", 0.5))+
+  scale_x_reverse(limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /15, name = "Total Pheophytines\n (µg/g bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "Total Pheophytines\n (µg/g OM)", x = " ") +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "darkgreen"), axis.title.x.top = element_text(color = "green3"))
+
+Phide2 <- ggplot()+
+  geom_bar(data= LR_all_bulk_ug_overlay , aes(y= PhideT*15, x= mean_VT22), stat = "identity", width = 25, fill = "forestgreen")+
+  geom_bar(data= LR_all_ug_overlay, aes(y= PhideT, x= mean_VT22), stat = "identity", width = 25, fill = alpha("green", 0.5))+
+  scale_x_reverse(limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 500), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /15, name = "Total Pheophorbides\n (µg/g bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "Total Pheophorbides\n (µg/g OM)", x = " ") +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "forestgreen"), axis.title.x.top = element_text(color = "green"))
+
+# Ratio plot - Overlay (Bulk vs. OM-normalized)
+# Calculate ratios for both datasets using LR_all files for consistency
+ratio_om <- LR_all_ug %>%
+  filter(Chla > 0 & PhphT > 0) %>%
+  mutate(Ratio = Chla / PhphT) %>%
+  select(mean_VT22, Ratio)
+
+ratio_bulk <- LR_all_bulk_ug %>%
+  filter(Chla > 0 & PhphT > 0) %>%
+  mutate(Ratio = Chla / PhphT) %>%
+  select(mean_VT22, Ratio)
+
+# Calculate ratio statistics for axis scaling
+ratio_om_clean <- ratio_om %>% filter(!is.na(Ratio), is.finite(Ratio))
+ratio_bulk_clean <- ratio_bulk %>% filter(!is.na(Ratio), is.finite(Ratio))
+
+cat("\n=== RATIO STATISTICS FOR AXIS SCALING ===\n")
+cat("OM-normalized Ratio (Chla / PhphT):\n")
+cat(sprintf("  Min: %.4f\n", min(ratio_om_clean$Ratio, na.rm = TRUE)))
+cat(sprintf("  Max: %.4f\n", max(ratio_om_clean$Ratio, na.rm = TRUE)))
+cat(sprintf("  Mean: %.4f\n", mean(ratio_om_clean$Ratio, na.rm = TRUE)))
+cat(sprintf("  Range: %.4f\n\n", max(ratio_om_clean$Ratio, na.rm = TRUE) - min(ratio_om_clean$Ratio, na.rm = TRUE)))
+
+cat("Bulk Ratio (Chla / PhphT):\n")
+cat(sprintf("  Min: %.4f\n", min(ratio_bulk_clean$Ratio, na.rm = TRUE)))
+cat(sprintf("  Max: %.4f\n", max(ratio_bulk_clean$Ratio, na.rm = TRUE)))
+cat(sprintf("  Mean: %.4f\n", mean(ratio_bulk_clean$Ratio, na.rm = TRUE)))
+cat(sprintf("  Range: %.4f\n\n", max(ratio_bulk_clean$Ratio, na.rm = TRUE) - min(ratio_bulk_clean$Ratio, na.rm = TRUE)))
+
+
+# Ratio plot - Overlay (Bulk vs. OM-normalized)
+# Calculate ratios for both datasets using LR_all files for consistency
+ratio_zoo <- LR_all_ug %>%
+  filter(PhideT > 0 & PhphT > 0) %>%
+  mutate(Ratio_z = PhideT / PhphT) %>%
+  select(mean_VT22, Ratio_z)
+
+ratio_zoo_bulk <- LR_all_bulk_ug %>%
+  filter(PhideT > 0 & PhphT > 0) %>%
+  mutate(Ratio_z = PhideT / PhphT) %>%
+  select(mean_VT22, Ratio_z)
+
+Ratio_3 <- ggplot()+
+  geom_bar(data= ratio_zoo_bulk, aes(y= Ratio_z*2, x= mean_VT22), stat = "identity", width = 25, fill = "darkslateblue")+
+  geom_bar(data= ratio_zoo, aes(y= Ratio_z, x= mean_VT22), stat = "identity", width = 25, fill = alpha("steelblue2", 0.5))+
+  scale_x_reverse(position = 'top', limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 50), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /2, name = "Phide/Pheo Ratio\n (bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "Phide/Pheo Ratio\n (OM)", x = "Age (cal yr BP)") +
+  theme(legend.position="none", axis.ticks.y= element_line(), axis.line.y = element_blank(), axis.text.y = element_text(size = 8), axis.title.x.bottom = element_text(color = "darkslateblue"), axis.title.x.top = element_text(color = "steelblue2"))
+
+
+Ratio2 <- ggplot()+
+  geom_bar(data= ratio_bulk, aes(y= Ratio*2, x= mean_VT22), stat = "identity", width = 25, fill = "darkslateblue")+
+  geom_bar(data= ratio_om, aes(y= Ratio, x= mean_VT22), stat = "identity", width = 25, fill = alpha("steelblue2", 0.5))+
+  scale_x_reverse(position = 'top', limits = c(max(LR_all_ug$mean_VT22, na.rm=TRUE), min(LR_all_ug$mean_VT22, na.rm=TRUE)), breaks = round(seq(min(LR_all_ug$mean_VT22, na.rm=TRUE), max(LR_all_ug$mean_VT22, na.rm=TRUE), by = 50), digits = 0)) +
+  scale_y_continuous(position = 'right', sec.axis = sec_axis(~ . /2, name = "Chl/Pheo Ratio\n (bulk)")) +
+  theme_classic() +
+  coord_flip()+ 
+  labs(title = " ", y = "Chl/Pheo Ratio\n (OM)", x = " ") +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.x.bottom = element_text(color = "darkslateblue"), axis.title.x.top = element_text(color = "steelblue2"))
+
+```
+
+# Wide plot: Overlay plots (Bulk vs. OM-normalized) + Ratio
+
+```{r}
+
+# Check which pigment plots exist (only include plots for pigments in common_pigments)
+all_pigment_plots <- list(
+  Fuco = if("Fuco" %in% common_pigments) Fuco2 else NULL,
+  Alpha = if("Alfa_car" %in% common_pigments) Alpha2 else NULL,
+  Echi = if("Echi1" %in% common_pigments) Echi2 else NULL,
+  Diato = if("Diadi" %in% common_pigments) Diato2 else NULL,
+  Canta = if("Canta" %in% common_pigments) Canta2 else NULL,
+  Zea = if("Zeax" %in% common_pigments) Zea2 else NULL,
+  Lut = if("Lute" %in% common_pigments) Lut2 else NULL,
+  OHSp = if("OH_Sph.ene" %in% common_pigments) OHSp2 else NULL,
+  Iso = if("Isore" %in% common_pigments) Iso2 else NULL,
+  Chlx = if("Chloxant" %in% common_pigments) Chlx2 else NULL,
+  Chla = if("Chla" %in% common_pigments) Chla2 else NULL,
+  BChl = if("BChl" %in% common_pigments) BChl2 else NULL,
+  Oke = if("Okenone" %in% common_pigments) Oke2 else NULL,
+  Phph = if("PhphT" %in% common_pigments) Phph2 else NULL,
+  Phide = if("PhideT" %in% common_pigments) Phide2 else NULL,
+  Ratio2 = if("Ratio2" %in% common_pigments) Ratio2 else NULL,
+  Ratio_3=if("Ratio_3" %in% common_pigments) Ratio_3 else NULL
+)
+
+# Remove NULL entries (pigments not in common_pigments)
+plots_to_use <- Filter(Negate(is.null), all_pigment_plots)
+
+cat("\nPlots to include in overlay grid:\n")
+cat(sprintf("  Pigment plots: %d (out of 13 attempted)\n", length(plots_to_use)))
+cat(sprintf("  List: %s\n", paste(names(plots_to_use), collapse = ", ")))
+
+# # Add ratio plot (overlay: bulk vs OM-normalized)
+plots_to_use$Ratio <- Ratio2
+plots_to_use$Ratio_z <- Ratio_3
+
+# Modify y-axis styling: show axis line only on first (left) and last (right) plots
+# First plot: show axis.line.y on left side
+if(length(plots_to_use) > 0) {
+  plots_to_use[[1]] <- plots_to_use[[1]] + theme(axis.line.y = element_line())
+  
+  # Last plot: show axis.line.y on right side  
+  if(length(plots_to_use) > 1) {
+    plots_to_use[[length(plots_to_use)]] <- plots_to_use[[length(plots_to_use)]] + theme(axis.line.y = element_line())
+  }
+}
+
+# Combine all plots in plot_grid
+wide_overlay_plot <- do.call(plot_grid, c(plots_to_use, list(nrow = 1, align = "h", rel_widths = rep(1, length(plots_to_use)))))
+
+print(wide_overlay_plot)
+
+# Save the comprehensive overlay plot
+ggsave("../figs/Pigments_Overlay_WithRatio.png", wide_overlay_plot, 
+       width = (28 * length(plots_to_use) / 14), height = 8, dpi = 300, bg = "white")
+cat("✓ Comprehensive overlay pigment plot saved: figs/Pigments_Overlay_WithRatio.png\n")
+```
+
+# Optional: Individual Chlorophyll-a and Pheophytin plots (if needed separately)
+
+```{r}
+# These are alternative individual plots if you want them separately
+# Uncomment to use
+
+# Bar plot 1: Chlorophyll-a
+# p_chla <- ggplot(plot_data_clean, aes(y = Chla, x = plot_data_clean$depth)) +
+#   geom_bar(stat = "identity", width = 25, fill = "darkgreen") +
+#   scale_x_reverse(breaks = round(seq(min(plot_data_clean$depth), max(plot_data_clean$depth), by = 100), digits = 0)) +
+#   scale_y_continuous(position = 'right') +
+#   theme_classic() +
+#   coord_flip() +
+#   labs(title = " ", y = "Chlorophyll-a (µg/g)", x = " ") +
+#   theme(legend.position = "none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+# Bar plot 2: Pheophytin-a
+# p_pheo <- ggplot(plot_data_clean, aes(y = Pheo, x = plot_data_clean$depth)) +
+#   geom_bar(stat = "identity", width = 25, fill = "orange") +
+#   scale_x_reverse(breaks = round(seq(min(plot_data_clean$depth), max(plot_data_clean$depth), by = 100), digits = 0)) +
+#   scale_y_continuous(position = 'right') +
+#   theme_classic() +
+#   coord_flip() +
+#   labs(title = " ", y = "Pheophytin-a (µg/g)", x = " ") +
+#   theme(legend.position = "none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+```
+
+# Plot information
+
+```{r}
+cat("\n=== PIGMENT PLOT DETAILS ===\n\n")
+cat(sprintf("Total pigments displayed: %d\n", length(pig_individual_plots) - 1))
+cat(sprintf("Pigments included:\n"))
+for(i in 1:(length(pigment_names))) {
+  cat(sprintf("  %d. %s (color: %s)\n", i, pigment_names[i], pig_colors[i]))
+}
+cat(sprintf("\nFinal plot: Chl-a / Pheophytin Ratio (color: steelblue)\n\n"))
+cat("All plots are aligned vertically at the same depth scale.\n")
+```
+
+# Summary Statistics
+
+```{r}
+cat("\n=== PIGMENT SUMMARY STATISTICS ===\n\n")
+
+# Chlorophyll statistics
+cat("Chlorophyll-a:\n")
+cat(sprintf("  Mean: %.2f µg/g\n", mean(plot_data_clean$Chla)))
+cat(sprintf("  Median: %.2f µg/g\n", median(plot_data_clean$Chla)))
+cat(sprintf("  Std Dev: %.2f µg/g\n", sd(plot_data_clean$Chla)))
+cat(sprintf("  Range: %.2f - %.2f µg/g\n\n", min(plot_data_clean$Chla), max(plot_data_clean$Chla)))
+
+# Pheophytin statistics
+cat("Pheophytin-a:\n")
+cat(sprintf("  Mean: %.2f µg/g\n", mean(plot_data_clean$Pheo)))
+cat(sprintf("  Median: %.2f µg/g\n", median(plot_data_clean$Pheo)))
+cat(sprintf("  Std Dev: %.2f µg/g\n", sd(plot_data_clean$Pheo)))
+cat(sprintf("  Range: %.2f - %.2f µg/g\n\n", min(plot_data_clean$Pheo), max(plot_data_clean$Pheo)))
+
+# Ratio statistics
+cat("Chl-a / Pheophytin Ratio:\n")
+cat(sprintf("  Mean: %.3f\n", mean(plot_data_clean$Ratio)))
+cat(sprintf("  Median: %.3f\n", median(plot_data_clean$Ratio)))
+cat(sprintf("  Std Dev: %.3f\n", sd(plot_data_clean$Ratio)))
+cat(sprintf("  Range: %.3f - %.3f\n", min(plot_data_clean$Ratio), max(plot_data_clean$Ratio)))
+```

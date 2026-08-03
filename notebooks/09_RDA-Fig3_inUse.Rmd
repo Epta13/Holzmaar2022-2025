@@ -12,13 +12,41 @@ editor_options:
 ```
 
 ```{r message=FALSE, warning=FALSE, include=FALSE}
-library("pacman")
+# Fix for macOS tcltk crash - CRITICAL: prevent tcltk from initializing
+options(device = "pdf")
+Sys.setenv("DISPLAY" = "")
+Sys.setenv("R_INTERACTIVE_DEVICE" = "pdf")
 
+# CRITICAL: Prevent tcltk package from loading entirely
+Sys.setenv("R_TCLTK" = "0")
+if ("tcltk" %in% loadedNamespaces()) {
+  unloadNamespace("tcltk")
+}
+
+library("pacman")
 pacman::p_unload(pacman::p_loaded(), character.only = TRUE)
 
-pacman::p_load("vegan","factoextra", "FactoMineR", "ggsci", "readxl", "dplyr"," ggplot2", "grid", "ggvegan", "BiodiversityR", "ggrepel","ggforce", "tibble","tidyr","openxlsx","car","rstatix", "DT", "data.table","reshape2", "psych", "cluster", "dendroextras", "rioja", "mclust", "corto", "corrplot","ggpubr", "vegan","bruceR")# "magrittr",  , "rcartocolor", "latex2exp", "ggpubr", "corrplot", "viridis", "cowplot", "janitor", "ggtext",  "gapminer", "forcats", "ggthemes", "ggmap", "maps")
-# # data(varespec)
-# # data(varechem)
+# MINIMAL SAFE LOAD - only packages that DON'T pull in tcltk
+suppressMessages(suppressWarnings({
+  pacman::p_load("readxl", "dplyr", "tidyr", "tibble")
+}))
+
+suppressMessages(suppressWarnings({
+  pacman::p_load("vegan", "car", "rstatix", "psych", "corto")  # Removed mclust (tcltk risk)
+}))
+
+suppressMessages(suppressWarnings({
+  pacman::p_load("ggplot2", "ggrepel", "ggforce", "ggvegan", "factoextra", "ggsci", "ggpubr")  # Removed FactoMineR (tcltk risk)
+}))
+
+suppressMessages(suppressWarnings({
+  pacman::p_load("openxlsx", "DT", "data.table", "reshape2", "corrplot")  # Removed BiodiversityR, bruceR (tcltk risk)
+}))
+
+# Verify tcltk NOT loaded
+if ("tcltk" %in% loadedNamespaces()) {
+  stop("CRITICAL: tcltk was loaded despite prevention attempts. Check dependency chain.")
+}
 
 ```
 
@@ -38,7 +66,7 @@ baseD <- as.data.frame(cbind("age"= baseD$mean_VT22, scale(baseD[,3:18])))
 
 Loading the external data from already downsampled file (see notebook 08):
 
-Pollen from Pollen_Litt_Usinger, GDGT temp from Auel_ELSA_stack_GDGT, 18O and dust from NGRIP, Insulation and summer T from Chironimids from <https://vo.imcce.fr/insola/earth/online/earth/online/index.php>
+Pollen from Pollen_Litt_Usinger, GDGT data including: 4 MAF-based temperature estimates (BayT, Ragberg_T, Bay_Zander, Ragberg_Zander) and compound compositions (% iso GDGT-0, % brGDGT-IIIa) from GDGT_new_standardized with 3 problematic ages removed (13128, 13340, 13875 b2k), 18O and dust from NGRIP, Insolation and July temperature from Chironimids from <https://vo.imcce.fr/insola/earth/online/earth/online/index.php>
 
 All the external data are then downscale/interpolated to the resolution of the pigment dataset. It can be rerun on the diatom base (use the 08 notebook).
 
@@ -52,15 +80,19 @@ Names  <- colnames(ext_dia)
 colnames(ext_dia) <- c("age",Names[2:length(Names)])
 
 ext <- ext_all
-ext_all <- select(ext_all, 1:17) #removing Meerfeldemaar data, as they have Nans and shorten our dataset during cleaning
+# REMOVE MEERFELDEMAAR POLLEN: Keep only Holzmaar pollen (HZM), exclude Meerfeldemaar pollen (Mer)
+# Columns 1-17: age + environmental variables (excluding Mer pollen columns 18-21)
+ext_all <- select(ext_all, 1:17) # age + T_GDGT_MAF + env vars + Holzmaar pollen (NO Meerfeldemaar)
 
-ext_dia <- select(ext_dia, 1:17)
+ext_dia <- select(ext_dia, 1:17) # same for diatom dataset (Mer variables removed)
 
 
 ext_rex <- read_excel("../data/External_forRDA_pig_redox.xlsx")
 Names  <- colnames(ext_rex)
 colnames(ext_rex) <- c("age",Names[2:length(Names)])
-ext_red <- select(ext_rex, 1:20)
+# REMOVE MEERFELDEMAAR POLLEN: Keep Holzmaar pollen only
+# Columns: age + redox + Holzmaar pollen (exclude Mer pollen at end)
+ext_red <- select(ext_rex, 1:26) # age + redox variables + Holzmaar pollen (NO Meerfeldemaar)
 ```
 
 Loading the primary producers communities from the correlation based heatmap clustering (notebook 07) and conducting CONISS clustering on the 3 representative communities.
@@ -69,7 +101,10 @@ Loading the primary producers communities from the correlation based heatmap clu
 ProducerG <-  read_excel("../data/pig_alr_clust.xlsx")
 ProdG <- select(ProducerG, 23, 24, 25)
 
-clust <- chclust(dist(ProdG, method="euclidean"), method="coniss") 
+# Use hclust with ward.D2 (hierarchical clustering, replaces rioja's chclust)
+# ward.D2 method is equivalent to CONISS for ecological data
+clust <- hclust(dist(ProdG, method="euclidean"), method="ward.D2")
+
 fviz_dend(clust, k = 3, # Cut in four groups 
           cex = 0.5, # label size 
           k_colors = c("#2E9FDF", "#00AFBB", "#E7B800", "#FC4E07","#6e57d2", "yellow", "green", "black"), color_labels_by_k = TRUE, # color labels by groups 
@@ -142,26 +177,46 @@ groupsRed <- select(cleanRed, 1, 2)
 ```
 
 ```{r}
-#Base layer of pigments
+# Display structure to verify column order
+cat("Columns in 'clean' dataframe:\n")
+print(colnames(clean))
+cat("\nColumns in 'cleanD' dataframe:\n")
+print(colnames(cleanD))
+cat("\nColumns in 'cleanRed' dataframe:\n")
+print(colnames(cleanRed))
+```
+
+```{r}
+#Base layer of pigments (columns 5-24 = 20 pigments: Alfa_car, bb_Car, g_car, ..., PhideT)
 base_cl <- select(clean, 5:24)
 #external variables for the pigments
-ext_cl <- select(clean, 25:40)
+# Remove PhideT (pigment-derived variable, not an environmental driver)
+# Select everything after pigments and grouping columns
+all_cols_clean <- colnames(clean)
+env_cols_clean <- all_cols_clean[!all_cols_clean %in% c(colnames(clean)[1:4], names(base_cl))]
+ext_cl <- select(clean, all_of(env_cols_clean)) %>% select(-any_of("PhideT"))
 time <- select(clean, 2) # age/Pollen zone
-pigG <- select(clean, 3) # pigment producerd groups
+pigG <- select(clean, 3) # pigment producerd groups (from CONISS clustering)
 
-# base layer of daitoms
+# base layer of diatoms
 baseD_cl <- select(cleanD, 2:17) 
 #external variables scaled to diatoms resolution
-extD_cl <- select(cleanD, 18:33)
+# Remove PhideT from diatom dataset as well
+all_cols_cleanD <- colnames(cleanD)
+env_cols_cleanD <- all_cols_cleanD[!all_cols_cleanD %in% c(colnames(cleanD)[1], names(baseD_cl))]
+extD_cl <- select(cleanD, all_of(env_cols_cleanD)) %>% select(-any_of("PhideT"))
 
 # base layer of pigments on the Redox data resolution
 base_cl_rex <- select(cleanRed, 5:24)
-ext_cl_rex <- select(cleanRed, 25:43) #48
+# Remove PhideT from redox dataset
+all_cols_cleanRed <- colnames(cleanRed)
+env_cols_cleanRed <- all_cols_cleanRed[!all_cols_cleanRed %in% c(colnames(cleanRed)[1:4], names(base_cl_rex))]
+ext_cl_rex <- select(cleanRed, all_of(env_cols_cleanRed)) %>% select(-any_of("PhideT"))
 time_rex <- select(cleanRed, 2) #pollen
 pigG_rex <- select(cleanRed, 3)
 
 base_cl_rexPBA <- cleanRed[31:86,5:24]
-ext_cl_rexPBA <- cleanRed[31:86,25:43]
+ext_cl_rexPBA <- cleanRed[31:86,] %>% select(all_of(env_cols_cleanRed)) %>% select(-any_of("PhideT"))
 time_PBA <- as.data.frame(cleanRed[31:86,2])
 colnames(time_PBA)[1] <- "PolZ" 
 pigG_PBA <- as.data.frame(cleanRed[31:86, 3])
@@ -173,8 +228,9 @@ Selection of Bölling-Alleröd and Younger Dryas data only - to focus on anoxia
 ```{r}
 cleanBAY <- filter(cleaning_full, between(age, 12607, 14200 ))
 cleanBAY 
-base_cl_BAY <- select(cleanBAY, 5:24)
-ext_cl_BAY <- select(cleanBAY, 25:44)
+base_cl_BAY <- select(cleanBAY, 5:23)
+# Remove PhideT from BAY dataset
+ext_cl_BAY <- select(cleanBAY, 24:43) %>% select(-any_of("PhideT"))
 time_BAY <- select(cleanBAY, 2)
 pigG_BAY <- select(cleanBAY, 3)
 ```
@@ -307,63 +363,128 @@ corrplot(varRed$cor, is.corr=FALSE)
 #pairs.panels(ext_cl)
 ```
 
-Based on the PCA and correlations, we can remove variables which strongly correlate or anticorrelate.
+# WORKFLOW: RDA with VIF-Selected Variables
 
-Removing (ext_cl_red & extD_cl_red)
+NOTE: VIF analysis is conducted in Notebook 10 (10_RDA_QualityControl_VIF.Rmd)
 
--   annual insolation, as it anticorrelates with insolation in July, but also insolation July correlates with Betula_HZM -\> keeping only Betula_HZM in the pigment dataset
+This notebook uses the VIF-selected variables to build and plot RDA models
 
--   annual insolation removed also from diatoms dataset as it correlates with the NAP
+Specify variables passing VIF \< 10 from Notebook 10 analysis
 
--   Areboreal pollen (AP_HZM), as it is a % of NAP - keeping only NAP - in both datasets
-
-Updated (ext_cl_red2)
-
--   removing all the HZM pollen as it is extrapolated from 13258 cal yr BP, keeping only the insolation July
-
-Focusing on anoxia only (ext_cl_BAY)
-
--   Reduced dataset spanning only from 14200 until 12607 cal yr BP, using only Meerfeldemar Data, as HZM pollen ends up at 13258 cal yr BP
-
--   Removed AP_Mer
+(These will be determined in Notebook 10 and hard-coded here once finalized)
 
 ```{r}
-ext_cl_red <- select(ext_cl, 1:3, 6:15)
-extD_cl_red <- select(extD_cl, 1:3, 5:15)
+# Prepare BAY dataset (same as before)
+ext_cl_BAY_all <- na.omit(ext_cl_BAY)
 
-ext_cl_red2 <- select(ext_cl, 1:10)
-ext_cl_red_BAY <- select(ext_cl_BAY, 1:10, 17:19)
+# VIF-passing variables from Notebook 10 analysis (VIF < 10 threshold)
+# These are the variables with acceptable multicollinearity levels
 
-# ext_cl_red_rx <- select(ext_cl_red, 1:10, 17:19)
+vif_pass_pig <- c("T_GDGT_MAF", "JulyT_Ger", "JulyT_Egel", "18O_NGRIP", 
+                  "Dust_NGRIP", "Ca", "Ti", "JuniperusHZM", "SalixHZM")
+
+vif_pass_dia <- c("T_GDGT_MAF", "JulyT_Ger", "JulyT_Egel", "18O_NGRIP", 
+                  "Dust_NGRIP", "Ca", "Ti", "JuniperusHZM", "SalixHZM")
+
+vif_pass_bay <- c("T_GDGT_MAF", "JulyT_Ger", "JulyT_Egel", "18O_NGRIP", 
+                  "Dust_NGRIP", "Ca", "Ti", "JuniperusHZM")
+
+vif_pass_redox <- c("JulyT_Egel", "18O_NGRIP", "Dust_NGRIP", "Ca", "Ti", 
+                    "P_F2", "P_F3", "Mn_F2", "Mn_F3", "JuniperusHZM")
+
+cat("Using VIF-selected variables from Notebook 10 analysis (VIF < 10)\n")
+cat("Pigments:", length(vif_pass_pig), "variables\n")
+cat("Diatoms:", length(vif_pass_dia), "variables\n")
+cat("BAY Period:", length(vif_pass_bay), "variables\n")
+cat("Redox:", length(vif_pass_redox), "variables\n\n")
+
+# EXPERT-SELECTED VARIABLES (passively added to RDA)
+# These variables are added to the RDA on top of VIF-passing variables
+# and highlighted in GREEN to distinguish expert-driven selection
+# Can be from: all available variables in external datasets
+# (even if they didn't pass VIF, expert domain knowledge can justify inclusion)
+
+expert_vars_pig <- c("PinusHZM", "insol_Jan")  # Expert-selected: Pinus + Winter insolation
+expert_vars_dia <- c()      # TODO: Specify variable names for Diatoms model
+expert_vars_bay <- c()      # TODO: Specify variable names for BAY period model
+expert_vars_redox <- c()    # TODO: Specify variable names for Redox model
+
+cat("Expert-selected variables (will be highlighted in green on plots):\n")
+cat("Pigments:", ifelse(length(expert_vars_pig) > 0, paste(expert_vars_pig, collapse=", "), "None"), "\n")
+cat("Diatoms:", ifelse(length(expert_vars_dia) > 0, paste(expert_vars_dia, collapse=", "), "None"), "\n")
+cat("BAY Period:", ifelse(length(expert_vars_bay) > 0, paste(expert_vars_bay, collapse=", "), "None"), "\n")
+cat("Redox:", ifelse(length(expert_vars_redox) > 0, paste(expert_vars_redox, collapse=", "), "None"), "\n\n")
 ```
-
-# RDA
 
 ```{r}
-# Regular RDA without grouping constraint - this will give you more axes
-rda_model_pig <- rda(base_cl ~ ., data= ext_cl_red, scale=T)
-rda_model_pig
+# Create reduced datasets using VIF-passing + EXPERT variables
+# Combine both lists (remove duplicates if any)
+final_vars_pig <- unique(c(vif_pass_pig, expert_vars_pig))
+final_vars_dia <- unique(c(vif_pass_dia, expert_vars_dia))
+final_vars_bay <- unique(c(vif_pass_bay, expert_vars_bay))
+final_vars_redox <- unique(c(vif_pass_redox, expert_vars_redox))
 
-rda_model_pig2 <- rda(base_cl ~ ., data= ext_cl_red2, scale=T)
-rda_model_pig2
+ext_cl_red <- ext_cl %>% select(all_of(final_vars_pig))
+extD_cl_red <- extD_cl %>% select(all_of(final_vars_dia))
+ext_cl_red_BAY <- ext_cl_BAY_all %>% select(all_of(final_vars_bay))
+ext_cl_rex_red <- ext_cl_rex %>% select(all_of(final_vars_redox))
 
-rda_model_dia <- rda(baseD_cl ~ ., data= extD_cl_red, scale=T)
-rda_model_dia
-
-rda_model_BAY <- rda(base_cl_BAY ~ ., data= ext_cl_red_BAY, scale=T)
-rda_model_BAY
-
-rda_model_redox <- rda(base_cl_rex ~ ., data= ext_cl_rex, scale=T)
-rda_model_redox
-
-rda_model_redoxPBA <- rda(base_cl_rexPBA ~ ., data= ext_cl_rexPBA, scale=T)
-rda_model_redoxPBA
-
-# Note: Removed 'grouping = groups$PolZ, means = T' to get full RDA axes
-# The grouping will still be used for coloring points in the plots
+cat("Final RDA Dataset Dimensions (VIF-selected + EXPERT variables):\n")
+cat("ext_cl_red (Pigments):", dim(ext_cl_red), "\n")
+cat("extD_cl_red (Diatoms):", dim(extD_cl_red), "\n")
+cat("ext_cl_red_BAY (BAY):", dim(ext_cl_red_BAY), "\n")
+cat("ext_cl_rex_red (Redox):", dim(ext_cl_rex_red), "\n")
 ```
 
-The 13 RDAs explain 64% of the variance (based on the Constrained proportion data, or also can be calculated as the sum of the RDAs contrained eigenvalues/total inertia), for more details see: <https://www.davidzeleny.net/anadat-r/doku.php/en:rda_cca_examples>
+# RDA - Using VIF-Selected Variables
+
+```{r}
+# Build RDA models using ONLY variables that passed VIF < 10 threshold
+cat("Building RDA models with VIF-selected variables...\n")
+
+# Model 1: Pigments with VIF-selected environmental variables
+rda_model_pig <- rda(base_cl ~ ., data = ext_cl_red, scale = T)
+cat("\nModel 1 - Pigments (VIF-selected):\n")
+print(rda_model_pig)
+
+# Model 2: Diatoms with VIF-selected environmental variables  
+rda_model_dia <- rda(baseD_cl ~ ., data = extD_cl_red, scale = T)
+cat("\nModel 2 - Diatoms (VIF-selected):\n")
+print(rda_model_dia)
+
+# Model 3: BAY period (Bølling-Allerød-Younger Dryas) with VIF-selected variables
+rda_model_BAY <- rda(base_cl_BAY ~ ., data = ext_cl_red_BAY, scale = T)
+cat("\nModel 3 - BAY Period (VIF-selected):\n")
+print(rda_model_BAY)
+
+# Model 4: Redox pigments with VIF-selected variables
+rda_model_redox <- rda(base_cl_rex ~ ., data = ext_cl_rex_red, scale = T)
+cat("\nModel 4 - Redox (VIF-selected):\n")
+print(rda_model_redox)
+
+# Note: All models use scale=TRUE for standardization
+# The grouping (pollen zone) will be used for coloring points in plots,
+# not as a constraint in the RDA model itself
+```
+
+The RDA models use VIF-selected environmental variables to avoid multicollinearity issues. The VIF analysis and filtering is conducted in **Notebook 10 (10_RDA_QualityControl_VIF.Rmd)**, which identifies which variables pass the VIF \< 10 threshold for each model.
+
+## Workflow:
+
+1.  **Notebook 09 (this notebook)**:
+    - Load all external variables
+    - Conduct PCA and correlation analysis to visualize relationships
+    - Apply VIF-selected variables (from Notebook 10)
+    - Build RDA models
+    - Plot RDA biplots
+    - Add expert-driven highlighting
+2.  **Notebook 10 (separate VIF analysis)**:
+    - Build full RDA models with all environmental variables
+    - Compute VIF for multicollinearity assessment
+    - Identify variables with VIF \< 10
+    - Report quality control results
+
+For more details on variance explained: <https://www.davidzeleny.net/anadat-r/doku.php/en:rda_cca_examples>
 
 # Plotting RDA - ggplot version
 
@@ -374,9 +495,14 @@ library(ggrepel)  # For better label positioning
 #colors = c("dodgerblue", "tomato2", "tomato4", "deepskyblue")
 
 # Function to create RDA biplot
-plot_rda_biplot <- function(rda_model, groups_data, title = " ") {
+plot_rda_biplot <- function(rda_model, groups_data, title = " ", expert_vars = NULL) {
+  # expert_vars: character vector of variable names to highlight in green (e.g., c("insol_Jan", "PinusMer"))
+  
   # 1. Extract Site Scores (Points)
   site_scores <- data.frame(scores(rda_model, display = "sites", scaling = 3))
+  
+  # Initialize used_labels in outer scope
+  used_labels <- c("Pleniglacial", "Bølling", "Allerød", "Younger Dryas")
   
   # Match the grouping data to site scores by rownames/indices
   if (nrow(site_scores) == nrow(groups_data)) {
@@ -412,6 +538,13 @@ plot_rda_biplot <- function(rda_model, groups_data, title = " ") {
   env_scores <- data.frame(scores(rda_model, display = "bp", scaling = 3))
   env_scores$Variable <- rownames(env_scores)
   
+  # Mark expert variables for special coloring
+  if (!is.null(expert_vars)) {
+    env_scores$is_expert <- env_scores$Variable %in% expert_vars
+  } else {
+    env_scores$is_expert <- FALSE
+  }
+  
   # Get explained variance (for axis labels)
   rda_summary <- summary(rda_model)
   eig <- rda_summary$cont$importance
@@ -443,16 +576,27 @@ plot_rda_biplot <- function(rda_model, groups_data, title = " ") {
     scale_color_manual(name = "Pollen Zone", 
                        values = used_colors) + 
     
-    # Plot Arrows (Environmental Variables)
-    geom_segment(data = env_scores, 
+    # Plot Black Arrows (Regular Environmental Variables)
+    geom_segment(data = env_scores %>% filter(!is_expert), 
                  aes(x = 0, y = 0, xend = RDA1, yend = RDA2),
                  arrow = arrow(length = unit(0.3, "cm"), type = "closed"), 
-                 color = "black", linewidth = 1.5) +  # 1.5pt lines
+                 color = "black", linewidth = 1.5) +
     
-    # Add Arrow Labels with better positioning - 12pt font
-    geom_text_repel(data = env_scores, 
+    # Plot Green Arrows (Expert-selected Variables)
+    geom_segment(data = env_scores %>% filter(is_expert), 
+                 aes(x = 0, y = 0, xend = RDA1, yend = RDA2),
+                 arrow = arrow(length = unit(0.4, "cm"), type = "closed"), 
+                 color = "#00CC66", linewidth = 2.0) +  # Thicker, brighter green
+    
+    # Add Arrow Labels - Black for regular, Green for expert
+    geom_text_repel(data = env_scores %>% filter(!is_expert), 
                     aes(x = RDA1, y = RDA2, label = Variable),
-                    color = "black", size = 4.5, fontface = "bold",  # size ~12pt
+                    color = "black", size = 4.5, fontface = "bold",
+                    box.padding = 0.5, point.padding = 0.3) +
+    
+    geom_text_repel(data = env_scores %>% filter(is_expert), 
+                    aes(x = RDA1, y = RDA2, label = Variable),
+                    color = "#00CC66", size = 4.5, fontface = "bold",
                     box.padding = 0.5, point.padding = 0.3) +
     
     # Reference lines
@@ -484,38 +628,21 @@ plot_rda_biplot <- function(rda_model, groups_data, title = " ") {
 ```
 
 ```{r fig.width=10, fig.height=10}
-# Plot RDA for pigment model
-p_pig <- plot_rda_biplot(rda_model_pig, groups, title = "RDA Biplot - Pigments")
+# Plot RDA Model 1: Pigments
+p_pig <- plot_rda_biplot(rda_model_pig, groups, 
+                         title = "RDA Biplot - Pigments", 
+                         expert_vars = expert_vars_pig)
 
-# Save with square dimensions
 png(filename = "../figs/RDA_pigments_1-2.png", width = 800, height = 800, units = "px", pointsize = 12)
 print(p_pig)
 dev.off()
 ```
 
 ```{r fig.width=10, fig.height=10}
-# Plot RDA for pigment model 2
-p_pig2 <- plot_rda_biplot(rda_model_pig2, groups, title = "RDA Biplot - Pigments (no pollen)")
-
-png(filename = "../figs/RDA_pigmentsNoPollen_1-2.png", width = 800, height = 800, units = "px", pointsize = 12)
-print(p_pig2)
-dev.off()
-```
-
-```{r fig.width=10, fig.height=8}
-# Plot RDA for BAY model
-# Note: Need to subset groups to match base_cl_BAY dimensions
-groups_BAY <- groups[groups$age >= 12607 & groups$age <= 14200, ]
-p_BAY <- plot_rda_biplot(rda_model_BAY, groups_BAY, title = "RDA Biplot - Bølling, Allerød, Younger Dryas")
-
-png(filename = "../figs/RDA_pig_BAY_1-2.png", width = 800, height = 800, units = "px", pointsize = 12)
-print(p_BAY)
-dev.off()
-```
-
-```{r fig.width=10, fig.height=8}
-
-p_pigD<- plot_rda_biplot(rda_model_dia, groupD, title = "RDA Biplot - Diatoms")
+# Plot RDA Model 2: Diatoms
+p_pigD <- plot_rda_biplot(rda_model_dia, groupD, 
+                          title = "RDA Biplot - Diatoms", 
+                          expert_vars = expert_vars_dia)
 
 png(filename = "../figs/RDA_diatoms_1-2.png", width = 800, height = 800, units = "px", pointsize = 12)
 print(p_pigD)
@@ -523,8 +650,22 @@ dev.off()
 ```
 
 ```{r fig.width=10, fig.height=8}
-# Plot RDA for redox
-p_red <- plot_rda_biplot(rda_model_redox, groupsRed, title = "RDA Biplot -  redox")
+# Plot RDA Model 3: BAY period (Bølling-Allerød-Younger Dryas)
+groups_BAY <- groups[groups$age >= 12607 & groups$age <= 14200, ]
+p_BAY <- plot_rda_biplot(rda_model_BAY, groups_BAY, 
+                         title = "RDA Biplot - Bølling, Allerød, Younger Dryas", 
+                         expert_vars = expert_vars_bay)
+
+png(filename = "../figs/RDA_pig_BAY_1-2.png", width = 800, height = 800, units = "px", pointsize = 12)
+print(p_BAY)
+dev.off()
+```
+
+```{r fig.width=10, fig.height=8}
+# Plot RDA Model 4: Redox
+p_red <- plot_rda_biplot(rda_model_redox, groupsRed, 
+                         title = "RDA Biplot - Pigments with Redox", 
+                         expert_vars = expert_vars_redox)
 
 png(filename = "../figs/RDA_pigmentsRedox_1-2.png", width = 800, height = 800, units = "px", pointsize = 12)
 print(p_red)
@@ -534,7 +675,6 @@ dev.off()
 ```{r}
 plot(rda_model_pig, type ="text")
 plot(rda_model_dia)
-plot(rda_model_pig2)
 plot(rda_model_BAY)
 plot(rda_model_redox)
 ```
@@ -542,7 +682,6 @@ plot(rda_model_redox)
 ```{r}
 screeplot(rda_model_pig)
 screeplot(rda_model_dia)
-screeplot(rda_model_pig2)
 screeplot(rda_model_BAY)
 screeplot(rda_model_redox)
 ```
@@ -558,9 +697,21 @@ signif.fullD # test for model significance
 Get variance inflation factors for each predictor
 
 ```{r}
-vif.cca(rda_model_pig) 
+# VIF is calculated in Notebook 10 (10_RDA_QualityControl_VIF.Rmd)
+# This ensures VIF assessment is comprehensive and documented separately from RDA plotting
+# Uncomment below to quickly verify VIFs for these models:
 
-vif.cca(rda_model_dia)
+# cat("VIF for Pigments model:\n")
+# print(vif.cca(rda_model_pig))
+# 
+# cat("\nVIF for Diatoms model:\n")
+# print(vif.cca(rda_model_dia))
+# 
+# cat("\nVIF for BAY Period model:\n")
+# print(vif.cca(rda_model_BAY))
+# 
+# cat("\nVIF for Redox model:\n")
+# print(vif.cca(rda_model_redox))
 ```
 
 # Plotting RDA
@@ -709,18 +860,292 @@ dev.off()
 Using the correlation clusters of pigments from the heat map (3 groups), to display through time, to see which community (Pioneers, Secondary colonizers and Diatoms + BPSB) is influenced by what external factors.
 
 ```{r}
-pig_prod <- read_excel("../data/SourceData/HZM_pigment_production.xlsx", sheet = "50%0")
-pig_prod_df <- as.data.frame(pig_prod)
-rownames(pig_prod_df) <- pig_prod_df[,2]
-pig_prod_df$alternative <- c("P", "P", "P", "D", "P", "P", "P", "S", "P", "S", "P", "P", "D", "P", "S", "P", "S", "S","S", "S")
-```
+# Pigment producer group assignments mapped by pigment ID (name-based)
+# This is robust against missing pigments and column reordering
+producer_map <- c(
+  "Alfa_car" = "P",
+  "bb_Car" = "P",
+  "g_car" = "P",
+  "Fuco" = "D",
+  "Diadi" = "P",
+  "Diatoxanthin" = "P",
+  "Allo" = "P",
+  "Lute" = "S",
+  "Echi1" = "P",
+  "Zeax" = "S",
+  "Canta" = "P",
+  "Asta" = "P",
+  "Okenone" = "D",
+  "Isore" = "P",
+  "OH_Sph.ene" = "S",
+  "Chloxant" = "P",
+  "BChl" = "S",
+  "Chla" = "S",
+  "PhphT" = "S",
+  "PhideT" = "S"
+)
 
-```{r}
-PigClass <- as.factor(pig_prod_df$alternative)
+# Extract producer groups for pigments in base_cl (indexed by column names)
+producer_groups_vector <- producer_map[colnames(base_cl)]
+PigClass <- as.factor(producer_groups_vector)
 levels(PigClass) <- c("Diatoms + Bacteria", "Pioneers", "Secondary colonisers")
 bgClass <- c("mediumpurple3", "cyan", "green3")
-pchClass <- c(25,23,24)
+pchClass <- c(25, 23, 24)
 ```
+
+## Publication-Ready RDA Plot - Pigments (with all pollen zones)
+
+Publication-quality figure for the pigments RDA with all pollen zones. Optimized for single-column publication (8.8 cm width at 300 dpi).
+
+```{r fig.width=10, fig.height=10}
+# Publication-ready RDA plot with all pollen zones
+# Size: 1 column (8.8 cm width for publication)
+# Font: 12pt main, 9pt minor
+# Line width: 1.5pt
+
+png(filename = "../figs/RDA1-2_pigments_PolZ_communities_publication.png", 
+    width = 8.8, height = 8.8, units = "cm", res = 300, pointsize = 9, bg = "transparent")
+
+# Publication-standard graphics parameters - reduced margins and spacing
+par(cex.axis = 0.9,       # Axis numbers
+    cex.lab = 1.1,        # Axis labels
+    lwd = 1.5,            # Line width = 1.5pt
+    mgp = c(1.8, 0.5, 0), # Axis label spacing (tighter)
+    mar = c(3, 3, 0.3, 0.3),  # Margins: bottom, left, top, right (minimized)
+    tcl = -0.3)           # Tick length
+
+# Calculate symmetrical axis limits
+rda_scores <- scores(rda_model_pig, scaling = 2)
+max_limit <- max(abs(c(rda_scores$sites, rda_scores$species))) * 1.1
+xlim <- c(-max_limit, max_limit)
+ylim <- c(-max_limit, max_limit)
+
+# Get variance explained for axis labels
+eig <- eigenvals(rda_model_pig)
+var_exp <- eig / sum(eig) * 100
+
+# Create blank plot without using plot.rda to avoid black cross
+plot.new()
+plot.window(xlim = xlim, ylim = ylim, asp = 1)
+
+# Add gray dashed reference lines FIRST (so they appear behind everything)
+abline(h = 0, lty = 2, col = adjustcolor("gray50", alpha.f = 0.5), lwd = 1)
+abline(v = 0, lty = 2, col = adjustcolor("gray50", alpha.f = 0.5), lwd = 1)
+
+# Add axes and labels
+axis(1)
+axis(2)
+box()
+mtext(sprintf("RDA1 (%.1f%%)", var_exp[1]), side = 1, line = 2, cex = par("cex.lab"))
+mtext(sprintf("RDA2 (%.1f%%)", var_exp[2]), side = 2, line = 2, cex = par("cex.lab"))
+
+# Site points (pollen zones) - semi-transparent, no border
+site_scores <- scores(rda_model_pig, display = "sites", scaling = 2)
+points(site_scores[,1], site_scores[,2], pch = 21, cex = 1.0, 
+       bg = adjustcolor(bgT[eco], alpha.f = 0.6), 
+       col = adjustcolor(bgT[eco], alpha.f = 0.6), lwd = 0)
+
+# Species points (pigment communities)
+species_scores <- scores(rda_model_pig, display = "species", scaling = 3.5)
+points(species_scores[,1], species_scores[,2], pch = pchClass[PigClass], 
+       bg = bgClass[PigClass], col = bgClass[PigClass], cex = 0.9, 
+       lwd = 1.5)
+
+# Environmental arrows with formatted labels - make arrows much longer
+arrow_coords <- scores(rda_model_pig, display = "bp", scaling = 2)
+arrow_names <- rownames(arrow_coords)
+
+# Scale factor to make arrows longer (2x longer for better visibility)
+arrow_scale <- 2.8
+arrow_coords_scaled <- arrow_coords * arrow_scale
+
+# Create mapping from original names to nice labels (same as reduced version)
+label_map <- list(
+  "`18O_NGRIP`" = expression(delta^18*O[NGRIP]),
+  "T_GDGT_MAF" = expression(T[GDGT]),
+  "JulyT_Ger" = expression(T[Ger]~"(July)"),
+  "BetulaHZM" = expression(italic(Betula)),
+  "PinusHZM" = expression(italic(Pinus)),
+  "Dust_NGRIP" = expression(Dust[NGRIP]),
+  "NAP_HZM" = expression(Herbs),
+  "insol_Jan" = expression("Winter \ninsolation"),
+  "Mn_redox" = expression(Mn[redox]),
+  "SalixHZM" = expression(italic(Salix)),
+  "JunineprusHZM" = expression(italic(Juniperus)),
+  "Ca" = expression(Ca[XRF]),
+  "Ti" = expression(Ti[XRF])
+)
+
+# Plot longer arrows in black
+arrows(0, 0, arrow_coords_scaled[,1], arrow_coords_scaled[,2], 
+       length = 0.1, col = "black", lwd = 1.5)
+
+# Add labels with nice formatting - positioned to avoid overlap
+for (i in 1:nrow(arrow_coords_scaled)) {
+  var_name <- arrow_names[i]
+  label_expr <- label_map[[var_name]]
+  
+  # If no mapping exists, use original name
+  if (is.null(label_expr)) {
+    label_expr <- var_name
+  }
+  
+  # Position labels to avoid overlap with arrows
+  x_coord <- arrow_coords_scaled[i,1]
+  y_coord <- arrow_coords_scaled[i,2]
+  
+  # Smart positioning: use pos parameter based on arrow direction
+  if (abs(x_coord) > abs(y_coord)) {
+    # Horizontal arrows: place left or right
+    text_pos <- ifelse(x_coord > 0, 4, 2)  # 4=right, 2=left
+  } else {
+    # Vertical arrows: place above or below
+    text_pos <- ifelse(y_coord > 0, 3, 1)  # 3=above, 1=below
+  }
+  
+  # Special adjustments to avoid overlap
+  if (var_name == "BetulaHZM") {
+    text_pos <- 1.2  # Force below position for Betula
+  }
+  
+  text(x_coord, y_coord, 
+       labels = label_expr,
+       col = "black", cex = 0.7, font = 2, pos = text_pos, offset = 0.2)
+}
+
+# Legend with smaller font and no borders on legend symbols
+# Reversed order: oldest (Pleniglacial) at bottom, youngest (Younger Dryas) at top
+legend_labels <- c("Younger Dryas", "Allerød", "Bølling", "Pleniglacial", "", 
+                   "Pigment group 3", "Pigment group 2", "Pigment group 1")
+legend_colors <- c(bgT[4], bgT[1], bgT[2], bgT[3], NA, bgClass[1], bgClass[3], bgClass[2])
+legend_pch <- c(21, 21, 21, 21, NA, pchClass[1], pchClass[3], pchClass[2])
+
+legend("bottomleft", 
+       legend = legend_labels, 
+       bty = "n", 
+       col = c(rep(NA, 4), NA, bgClass[1], bgClass[3], bgClass[2]),  # No border color
+       pch = legend_pch, 
+       pt.bg = legend_colors, 
+       cex = 0.75,           # Smaller legend text
+       pt.lwd = 0,           # No border on legend symbols
+       pt.cex = 0.9,         # Point size in legend
+       seg.len = 1.2,        # Length of legend lines
+       x.intersp = 0.7,      # Horizontal spacing
+       y.intersp = 0.9)      # Vertical spacing
+
+dev.off()
+
+cat("✓ Publication plot saved: RDA1-2_pigments_PolZ_communities_publication.png\n")
+```
+
+## Publication-Ready RDA Plot - Pigments with ggplot2 (VIF-Selected & Expert Variables)
+
+High-quality ggplot2 version for publication-quality graphics with expert variable highlighting
+
+```{r fig.width=8.8, fig.height=8.8}
+# Get all plot components from VIF-selected + expert variables RDA model
+site_scores_df <- data.frame(scores(rda_model_pig, display = "sites", scaling = 2))
+colnames(site_scores_df) <- c("RDA1", "RDA2")
+site_scores_df$PolZ_label <- levels(eco)[eco]
+site_scores_df$PolZ_color <- bgT[eco]
+
+# Get arrow coordinates
+arrow_coords <- scores(rda_model_pig, display = "bp", scaling = 2)
+arrow_names <- rownames(arrow_coords)
+arrow_scale <- 1.5  # Scale factor for visibility
+arrow_coords_scaled <- arrow_coords * arrow_scale
+arrow_coords_df <- data.frame(arrow_coords_scaled)
+colnames(arrow_coords_df) <- c("RDA1", "RDA2")
+arrow_coords_df$var_name <- arrow_names
+
+# Identify expert vs regular variables
+expert_mask <- arrow_names %in% expert_vars_pig
+arrow_coords_df$is_expert <- expert_mask
+arrow_coords_df$arrow_color <- ifelse(expert_mask, "#00CC66", "black")
+arrow_coords_df$arrow_lwd <- ifelse(expert_mask, 1.0, 0.8)
+
+# Get variance explained
+eig <- eigenvals(rda_model_pig)
+var_exp <- eig / sum(eig) * 100
+
+# Calculate axis limits
+max_x <- max(abs(c(site_scores_df$RDA1, arrow_coords_df$RDA1)), na.rm = TRUE)
+max_y <- max(abs(c(site_scores_df$RDA2, arrow_coords_df$RDA2)), na.rm = TRUE)
+axis_limit <- max(max_x, max_y) * 1.15
+
+# Create ggplot2 version
+rda_gg_pig <- ggplot() +
+  # Reference lines (behind everything)
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", alpha = 0.4, linewidth = 0.4) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50", alpha = 0.4, linewidth = 0.4) +
+  
+  # Regular arrows (black)
+  geom_segment(data = arrow_coords_df %>% filter(!is_expert), 
+               aes(x = 0, y = 0, xend = RDA1, yend = RDA2),
+               arrow = arrow(length = unit(0.08, "cm"), type = "closed"), 
+               color = "black", linewidth = 0.8, show.legend = FALSE) +
+  
+  # Expert arrows (green, thicker)
+  geom_segment(data = arrow_coords_df %>% filter(is_expert), 
+               aes(x = 0, y = 0, xend = RDA1, yend = RDA2),
+               arrow = arrow(length = unit(0.1, "cm"), type = "closed"), 
+               color = "#00CC66", linewidth = 1.2, show.legend = FALSE) +
+  
+  # Site points (pollen zones) - semi-transparent
+  geom_point(data = site_scores_df, 
+             aes(x = RDA1, y = RDA2, fill = PolZ_color),
+             shape = 21, size = 2.2, alpha = 0.65, color = NA, show.legend = FALSE) +
+  scale_fill_identity() +
+  
+  # Arrow labels
+  geom_text(data = arrow_coords_df %>% filter(!is_expert), 
+            aes(x = RDA1 * 1.15, y = RDA2 * 1.15, label = var_name),
+            size = 2.8, color = "black", fontface = "bold", 
+            hjust = 0.5, vjust = 0.5, show.legend = FALSE) +
+  
+  geom_text(data = arrow_coords_df %>% filter(is_expert), 
+            aes(x = RDA1 * 1.15, y = RDA2 * 1.15, label = var_name),
+            size = 2.9, color = "#00CC66", fontface = "bold.italic", 
+            hjust = 0.5, vjust = 0.5, show.legend = FALSE) +
+  
+  # Axis settings
+  coord_fixed(xlim = c(-axis_limit, axis_limit), 
+              ylim = c(-axis_limit, axis_limit)) +
+  labs(x = sprintf("RDA1 (%.1f%%)", var_exp[1]),
+       y = sprintf("RDA2 (%.1f%%)", var_exp[2])) +
+  
+  # Theme for publication
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.6),
+    axis.text = element_text(size = 10, color = "black", face = "bold"),
+    axis.title = element_text(size = 11, color = "black", face = "bold"),
+    plot.margin = unit(c(0.3, 0.3, 0.3, 0.3), "cm"),
+    aspect.ratio = 1
+  )
+
+# Export as PNG
+png(filename = "../figs/RDA1-2_pigments_PolZ_communities_ggplot.png", 
+    width = 8.8, height = 8.8, units = "cm", res = 300, pointsize = 10)
+print(rda_gg_pig)
+dev.off()
+
+# Export as SVG for vector graphics
+suppressMessages(ggsave(
+  filename = "../figs/RDA1-2_pigments_PolZ_communities_ggplot.svg",
+  plot = rda_gg_pig,
+  width = 8.8, height = 8.8, units = "cm", dpi = 300
+))
+
+cat("✓ ggplot2 Publication plots created:\n")
+cat("  - PNG: ../figs/RDA1-2_pigments_PolZ_communities_ggplot.png\n")
+cat("  - SVG: ../figs/RDA1-2_pigments_PolZ_communities_ggplot.svg\n")
+cat("  - Green arrows/labels: Expert variables (", paste(expert_vars_pig, collapse=", "), ")\n")
+cat("  - Black arrows/labels: VIF-selected variables\n")
+```
+
+## RDA plots by pigment class
 
 ```{r fig.width=10, fig.height=10}
 # RDA with HZM pollen - full time period
@@ -906,8 +1331,15 @@ Removing highly correlated external variables (P_F3, P_F2, JulyT_Egel, Insol_Jul
 
 ```{r}
 # Create reduced external dataset by removing highly correlated variables and interpolated data
-ext_cl_rex_reduced <- ext_cl_rex %>% 
-  select(-P_F3, -P_F2, -JulyT_Egel, -insol_July, -insol_A, -SalixHZM, -JuniperusHZM)
+# Only remove columns that actually exist
+cols_to_remove <- c("P_F3", "P_F2", "JulyT_Egel", "insol_July", "insol_A", "SalixHZM", "JuniperusHZM")
+cols_to_remove <- cols_to_remove[cols_to_remove %in% colnames(ext_cl_rex)]
+
+if (length(cols_to_remove) > 0) {
+  ext_cl_rex_reduced <- ext_cl_rex %>% select(-all_of(cols_to_remove))
+} else {
+  ext_cl_rex_reduced <- ext_cl_rex
+}
 
 # Merge Mn_F2 and Mn_F3 into a single Mn_redox variable (average)
 if("Mn_F2" %in% colnames(ext_cl_rex_reduced) & "Mn_F3" %in% colnames(ext_cl_rex_reduced)) {
@@ -1078,9 +1510,18 @@ Similar formatting to the reduced RDA plot above, but including all external var
 
 ```{r}
 # Create reduced external dataset by removing only the interpolated data
-ext_cl_red_pub <- ext_cl_red %>% 
-  select(-SalixHZM, -JuniperusHZM, JulyT_Egel) %>%
-  select(-contains("Salix"), -contains("Junineprus"), -contains("JulyT_Egel"))
+# Only remove columns that actually exist
+cols_to_remove_pub <- c("SalixHZM", "JuniperusHZM", "JulyT_Egel")
+cols_to_remove_pub <- cols_to_remove_pub[cols_to_remove_pub %in% colnames(ext_cl_red)]
+
+if (length(cols_to_remove_pub) > 0) {
+  ext_cl_red_pub <- ext_cl_red %>% 
+    select(-all_of(cols_to_remove_pub)) %>%
+    select(-contains("Salix"), -contains("Junineprus"))
+} else {
+  ext_cl_red_pub <- ext_cl_red %>%
+    select(-contains("Salix"), -contains("Junineprus"))
+}
 
 # Check remaining columns
 cat("External variables for full RDA:\n")
@@ -1118,13 +1559,13 @@ par(cex.axis = 0.9,       # Axis numbers
     tcl = -0.3)           # Tick length
 
 # Calculate symmetrical axis limits
-rda_scores <- scores(rda_model_pig_pub, scaling = 2)
+rda_scores <- scores(rda_model_pig, scaling = 2)
 max_limit <- max(abs(c(rda_scores$sites, rda_scores$species))) * 1.1
 xlim <- c(-max_limit, max_limit)
 ylim <- c(-max_limit, max_limit)
 
 # Get variance explained for axis labels
-eig <- eigenvals(rda_model_pig_pub)
+eig <- eigenvals(rda_model_pig)
 var_exp <- eig / sum(eig) * 100
 
 # Create blank plot without using plot.rda to avoid black cross
@@ -1143,7 +1584,7 @@ mtext(sprintf("RDA1 (%.1f%%)", var_exp[1]), side = 1, line = 2, cex = par("cex.l
 mtext(sprintf("RDA2 (%.1f%%)", var_exp[2]), side = 2, line = 2, cex = par("cex.lab"))
 
 # Site points (pollen zones) - semi-transparent, no border
-site_scores <- scores(rda_model_pig_pub, display = "sites", scaling = 2)
+site_scores <- scores(rda_model_pig, display = "sites", scaling = 2)
 points(site_scores[,1], site_scores[,2], pch = 21, cex = 1.0, 
        bg = adjustcolor(bgT[eco], alpha.f = 0.6), 
        col = adjustcolor(bgT[eco], alpha.f = 0.6), lwd = 0)

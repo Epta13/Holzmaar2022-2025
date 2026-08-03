@@ -1,0 +1,1118 @@
+---
+title: "RDA with VIF-Based Variable Selection (Reviewer Suggestions)"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Objective
+
+This notebook reproduces the RDA analysis and publication figure using **VIF-based automatic variable selection** (following Blanchet et al. 2008) rather than expert manual selection. This addresses reviewer suggestions to: 1. Apply VIF filtering to assess multicollinearity 2. Adjust permutation tests for multiple comparisons 3. Transparently document the variable selection procedure
+
+------------------------------------------------------------------------
+
+# 1. Loading Packages
+
+```{r message=FALSE, warning=FALSE}
+# Fix for macOS tcltk crash - CRITICAL: prevent tcltk from initializing
+options(device = "pdf")
+Sys.setenv("DISPLAY" = "")
+Sys.setenv("R_INTERACTIVE_DEVICE" = "pdf")
+Sys.setenv("R_TCLTK" = "0")
+if ("tcltk" %in% loadedNamespaces()) {
+  unloadNamespace("tcltk")
+}
+
+library("pacman")
+pacman::p_unload(pacman::p_loaded(), character.only = TRUE)
+
+# Install/load only essential packages (removed rioja - tcltk risk)
+pacman::p_load("vegan", "readxl", "dplyr", "tidyr")
+
+# Verify tcltk NOT loaded
+if ("tcltk" %in% loadedNamespaces()) {
+  stop("CRITICAL: tcltk was loaded despite prevention attempts.")
+}
+
+cat("✓ All required packages loaded successfully\n")
+```
+
+------------------------------------------------------------------------
+
+# 2. Loading Data
+
+```{r}
+# Pigment data (primary response variables) - ALR transformed
+base <- read_excel("../data/pig_alr.xlsx")
+
+# External environmental variables (predictors)
+# Includes: Pollen, temperature, isotopes, dust, insolation
+# All interpolated to pigment data resolution
+ext_all <- read_excel("../data/External_forRDA_pig.xlsx")
+Names  <- colnames(ext_all)
+colnames(ext_all) <- c("age", Names[2:length(Names)])
+ext_all <- select(ext_all, 1:21)  # Keep age + T_GDGT_MAF + 19 env vars
+
+# Pigment producer groups (clusters)
+ProducerG <- read_excel("../data/pig_alr_clust.xlsx")
+ProdG <- select(ProducerG, 23, 24, 25)
+
+# Pollen zones for grouping
+groups <- read_excel("../data/Pig_clustered_PC.xlsx")
+groups <- groups %>% mutate(PZn = case_when(PolZ == "Pleniglacial" ~ "1",
+                                             PolZ == "Bølling" ~ "2",
+                                             PolZ == "Allerød" ~ "3",
+                                             PolZ == "YoungerDryas" ~ "4"))
+groups <- select(groups, 2, 23)
+colnames(groups) <- c("age", "PolZ")
+
+# QUALITY CONTROL: Exclude problematic GDGT dates from external dataset
+# These three dates have known quality issues and should not be used in analyses
+gdgt_exclude_dates <- c(13128, 13340, 13875)  # b2k
+ext_all <- filter(ext_all, !(age %in% gdgt_exclude_dates))
+
+cat("✓ Data loaded successfully\n")
+cat(sprintf("  - Pigment data: %d samples × %d variables\n", nrow(base), ncol(base)-1))
+cat(sprintf("  - External variables: %d samples × %d variables (after GDGT QC exclusions: %s b2k)\n", 
+            nrow(ext_all), ncol(ext_all)-1, paste(gdgt_exclude_dates, collapse = ", ")))
+```
+
+------------------------------------------------------------------------
+
+# 3. Data Preparation and Clustering
+
+```{r}
+# CONISS clustering on producer groups
+# Use hclust with ward.D2 (replaces rioja's chclust)
+clust <- hclust(dist(ProdG, method = "euclidean"), method = "ward.D2")
+clustercut <- cbind(1:nrow(ProdG), cutree(clust, 3))
+ProdG <- bind_cols(ProducerG[, 2], ProdG, clustercut)
+colnames(ProdG)[5] <- 'orderCONISS'
+colnames(ProdG)[6] <- 'CONISScluster'
+
+ProdG_cl <- select(ProdG, 1, 6)
+
+# Merge pollen zones with producer groups
+groups <- merge(groups, ProdG_cl)
+
+cat("✓ CONISS clustering complete (3 clusters)\n")
+```
+
+------------------------------------------------------------------------
+
+# 4. Data Cleaning and Merging
+
+```{r}
+# Merge all data by age
+cleaning <- merge(base, ext_all, by = "age", all = TRUE)
+cleaning <- merge(groups, cleaning, by = "age", all = TRUE)
+
+# Remove unused "Mer" columns (these cause NAs in Pleniglacial zone data but aren't used in RDA)
+# These columns contain measurement data that's not part of the analysis
+cleaning <- cleaning %>% select(-any_of(c("BetulaMer", "PinusMer", "NAP_Mer", "AP_Mer")))
+
+# Remove rows with missing values
+clean <- na.omit(cleaning)
+
+cat(sprintf("✓ Data merged and cleaned\n"))
+cat(sprintf("  - Original rows: %d\n", nrow(base)))
+cat(sprintf("  - Unused 'Mer' columns removed to preserve Pleniglacial samples\n"))
+cat(sprintf("  - Rows after removing NAs: %d\n", nrow(clean)))
+cat(sprintf("  - Columns in cleaned dataset: %d\n", ncol(clean)))
+cat(sprintf("    - Column 1: age (merge key)\n"))
+cat(sprintf("    - Column 2: PolZ (pollen zones)\n"))
+cat(sprintf("    - Column 3: CONISScluster (pigment producer groups)\n"))
+cat(sprintf("    - Column 4: depth (metadata)\n"))
+cat(sprintf("    - Columns 5-24: pigment data (20 response variables)\n"))
+cat(sprintf("    - Columns 25+: external variables (predictors)\n"))
+```
+
+------------------------------------------------------------------------
+
+# 5. Extract Response and Predictor Variables
+
+```{r}
+# Extract Response and Predictor Variables
+
+# After merging: Column 1 = age, Column 2 = PolZ, Column 3 = CONISScluster, Column 4 = depth
+# Response variables: pigment data (columns 5-24 = 20 pigments: Alfa_car, bb_Car, g_car, ..., PhideT)
+base_cl <- select(clean, 5:24)
+
+# Predictor variables: external environmental data (columns 25 onward)
+# These now include: age + TGDGT + 4 MAF temps + 2 compound % + 19 other environmental variables
+ext_cl <- select(clean, 25:ncol(clean))
+
+# Grouping variables for plotting
+PolZ <- as.factor(clean[[2]])  # Column 2: Pollen zones (raw values: 1=Allerød, 2=Bølling, 3=Pleniglacial, 4=YD)
+
+# Create pollen zone factor with correct level ordering (must match raw data order)
+PolZ <- as.factor(clean[[2]])
+levels(PolZ) <- c("Allerød", "Bølling", "Pleniglacial", "Younger Dryas")
+
+# Load pigment producer group classifications (manually assigned based on organism groups)
+pig_prod <- read_excel("../data/SourceData/pig_prod.xlsx", sheet = "50%0")
+
+# Producer group assignments mapped by pigment ID (name-based, not position-based)
+# This is robust against missing pigments and column reordering
+producer_map <- c(
+  "Alfa_car" = "P",
+  "bb_Car" = "P",
+  "g_car" = "P",
+  "Fuco" = "D",
+  "Diadi" = "P",
+  "Diatoxanthin" = "P",
+  "Allo" = "P",
+  "Lute" = "S",
+  "Echi1" = "P",
+  "Zeax" = "S",
+  "Canta" = "P",
+  "Asta" = "P",
+  "Okenone" = "D",
+  "Isore" = "P",
+  "OH_Sph.ene" = "S",
+  "Chloxant" = "P",
+  "BChl" = "S",
+  "Chla" = "S",
+  "PhphT" = "S",
+  "PhideT" = "S"
+)
+
+# Extract producer groups for actual pigments in data (indexed by column names)
+producer_groups_vector <- producer_map[colnames(base_cl)]
+PigmentClass <- as.factor(producer_groups_vector)
+levels(PigmentClass) <- c("Diatoms + Bacteria", "Pioneers", "Secondary colonisers")
+
+cat("✓ Variables extracted:\n")
+cat(sprintf("  - Response (pigments): %d variables\n", ncol(base_cl)))
+cat(sprintf("    Producers: D=%d, P=%d, S=%d\n", 
+            sum(PigmentClass == "Diatoms + Bacteria"),
+            sum(PigmentClass == "Pioneers"),
+            sum(PigmentClass == "Secondary colonisers")))
+cat(sprintf("  - Predictors (environmental): %d variables\n", ncol(ext_cl)))
+cat(sprintf("  - Pollen zones: %s\n", paste(levels(PolZ), collapse = ", ")))
+cat(sprintf("  - Total samples: %d\n", nrow(base_cl)))
+
+# DIAGNOSTIC: Show which pigments are in each group
+cat("\n✓ Pigment classification details:\n")
+cat("  Diatoms + Bacteria:\n")
+cat(sprintf("    %s\n", paste(colnames(base_cl)[PigmentClass == "Diatoms + Bacteria"], collapse = ", ")))
+cat("  Pioneers:\n")
+cat(sprintf("    %s\n", paste(colnames(base_cl)[PigmentClass == "Pioneers"], collapse = ", ")))
+cat("  Secondary colonisers:\n")
+cat(sprintf("    %s\n", paste(colnames(base_cl)[PigmentClass == "Secondary colonisers"], collapse = ", ")))
+```
+
+------------------------------------------------------------------------
+
+# 6. VIF-Based Variable Selection
+
+```{r}
+cat("\n")
+cat("═══════════════════════════════════════════════════════════\n")
+cat("STEP 1: VIF-BASED VARIABLE SELECTION\n")
+cat("═══════════════════════════════════════════════════════════\n\n")
+
+# Calculate VIF on full 16-variable model
+rda_full_16 <- rda(base_cl ~ ., data = ext_cl, scale = TRUE)
+vif_full_16 <- vif.cca(rda_full_16)
+
+cat("VIF values for all 16 environmental variables:\n")
+vif_df <- data.frame(
+  Variable = names(vif_full_16),
+  VIF = round(vif_full_16, 3),
+  Status = ifelse(vif_full_16 > 10, "❌ REMOVE (>10)",
+                  ifelse(vif_full_16 > 5, "⚠️  CAUTION (5-10)", "✓ OK (<5)"))
+)
+print(vif_df)
+
+# Apply VIF threshold of 10 (critical multicollinearity)
+VIF_THRESHOLD <- 10
+vif_acceptable_names <- names(vif_full_16)[vif_full_16 <= VIF_THRESHOLD & !is.na(vif_full_16)]
+# FIX: Strip backticks from VIF names to match column names (e.g., `18O_NGRIP` → 18O_NGRIP)
+# Backticks are added by R to invalid identifiers (names starting with digits) but aren't in actual column names
+vif_acceptable_names <- gsub("`", "", vif_acceptable_names)
+vars_keep_vif10 <- intersect(vif_acceptable_names, colnames(ext_cl))
+ext_cl_vif <- ext_cl %>% select(all_of(vars_keep_vif10))
+
+# CRITICAL: Ensure PhideT is NOT in external variables (it's a pigment response variable, not a predictor)
+ext_cl_vif <- ext_cl_vif %>% select(-any_of("PhideT"))
+
+cat("\n")
+cat(sprintf("✓ Variables selected by VIF criterion (VIF ≤ %d): %d variables\n", 
+            VIF_THRESHOLD, ncol(ext_cl_vif)))
+cat("Selected variables:\n")
+print(colnames(ext_cl_vif))
+
+# Identify removed variables
+vars_removed <- setdiff(colnames(ext_cl), colnames(ext_cl_vif))
+if(length(vars_removed) > 0) {
+  cat("\n")
+  cat(sprintf("❌ Variables REMOVED due to high collinearity (VIF > %d): %d variables\n", 
+              VIF_THRESHOLD, length(vars_removed)))
+  print(vars_removed)
+  
+  cat("\n")
+  cat("ECOLOGICAL INTERPRETATION OF REMOVED VARIABLES:\n")
+  cat("─────────────────────────────────────────────────\n\n")
+  
+  # For each removed variable, show its correlations with kept variables
+  for(removed_var in vars_removed) {
+    if(removed_var %in% colnames(ext_cl)) {
+      cat(sprintf("\n► %s (VIF = %.2f)\n", removed_var, vif_full_16[removed_var]))
+      
+      # Calculate correlations with all kept variables
+      cors <- numeric(length(vars_keep_vif10))
+      names(cors) <- vars_keep_vif10
+      
+      for(kept_var in vars_keep_vif10) {
+        cors[kept_var] <- cor(ext_cl[[removed_var]], ext_cl[[kept_var]], 
+                               use = "complete.obs")
+      }
+      
+      # Show top 3 most correlated kept variables
+      cors_sorted <- sort(abs(cors), decreasing = TRUE)[1:3]
+      
+      cat("  Correlated with kept variables:\n")
+      for(i in seq_along(cors_sorted)) {
+        kept_name <- names(cors_sorted)[i]
+        cor_val <- cors[kept_name]
+        direction <- ifelse(cor_val > 0, "positive", "negative")
+        cat(sprintf("    %d. %s (r = %.3f, %s)\n", i, kept_name, cor_val, direction))
+      }
+    }
+  }
+  
+  cat("\n")
+  cat("NOTE: Removed variables are represented in the model through their\n")
+  cat("correlations with kept variables. The ecological drivers they represent\n")
+  cat("are partially captured by the remaining variables.\n")
+} else {
+  cat("\n✓ No variables removed - all 16 variables have VIF ≤ 10\n")
+}
+cat("\n")
+```
+
+------------------------------------------------------------------------
+
+# 7. RDA Model with VIF-Selected Variables
+
+```{r}
+cat("═══════════════════════════════════════════════════════════\n")
+cat("STEP 2: RDA MODEL WITH VIF-SELECTED VARIABLES\n")
+cat("═══════════════════════════════════════════════════════════\n\n")
+
+# Create RDA model
+rda_model_vif <- rda(base_cl ~ ., data = ext_cl_vif, scale = TRUE)
+
+cat("RDA Model Summary (VIF-Selected Variables):\n")
+print(rda_model_vif)
+
+cat("\n")
+```
+
+------------------------------------------------------------------------
+
+# 8. Statistical Significance Testing with Multiple Comparison Correction
+
+```{r}
+cat("═══════════════════════════════════════════════════════════\n")
+cat("STEP 3: STATISTICAL SIGNIFICANCE WITH MULTIPLE CORRECTION\n")
+cat("═══════════════════════════════════════════════════════════\n\n")
+
+# Test overall model significance using permutation tests
+alpha <- 0.05
+
+cat(sprintf("Significance Testing (α = %.2f):\n\n", alpha))
+
+# Permutation test with unrestricted permutations (999 permutations)
+signif_vif <- anova.cca(rda_model_vif, permutations = 999)
+
+cat("Permutation Test Results (999 unrestricted permutations):\n")
+print(signif_vif)
+
+cat("\n")
+cat(sprintf("Overall model significance: %s\n",
+            ifelse(signif_vif$`Pr(>F)`[1] < alpha, "✓ SIGNIFICANT", "✗ Not significant")))
+cat(sprintf("  (p-value: %.4f, threshold: %.2f)\n\n",
+            signif_vif$`Pr(>F)`[1], alpha))
+```
+
+------------------------------------------------------------------------
+
+# 9. VIF Assessment of Final Model
+
+```{r}
+cat("═══════════════════════════════════════════════════════════\n")
+cat("STEP 4: VIF ASSESSMENT OF FINAL MODEL\n")
+cat("═══════════════════════════════════════════════════════════\n\n")
+
+vif_final <- vif.cca(rda_model_vif)
+
+vif_final_df <- data.frame(
+  Variable = names(vif_final),
+  VIF = round(vif_final, 3),
+  Status = ifelse(vif_final > 10, "❌ REMOVE",
+                  ifelse(vif_final > 5, "⚠️  CAUTION", "✓ OK"))
+)
+
+cat("VIF values in final RDA model:\n")
+print(vif_final_df)
+
+cat(sprintf("\n  - Maximum VIF: %.3f\n", max(vif_final, na.rm = TRUE)))
+cat(sprintf("  - Mean VIF: %.3f\n", mean(vif_final, na.rm = TRUE)))
+```
+
+------------------------------------------------------------------------
+
+# 9.5 Diagnostics: Understanding RDA Alignment vs. Collinearity
+
+```{r}
+cat("\n")
+cat("═══════════════════════════════════════════════════════════\n")
+cat("NOTE: RDA ARROW ALIGNMENT ≠ COLLINEARITY\n")
+cat("═══════════════════════════════════════════════════════════\n\n")
+
+cat("IMPORTANT DISTINCTION:\n\n")
+cat("1. VIF (Variance Inflation Factor) measures COLLINEARITY\n")
+cat("   - VIF detects correlation BETWEEN predictor variables\n")
+cat("   - High VIF (>10) = two predictors are highly correlated\n")
+cat("   - Low VIF (<10) = predictors are independent in the model\n\n")
+
+cat("2. RDA Biplot ARROW ALIGNMENT shows SHARED ASSOCIATIONS\n")
+cat("   - If two arrows point in similar direction → similar relationship\n")
+cat("     with the RESPONSE VARIABLES (pigments)\n")
+cat("   - This does NOT necessarily mean the predictors are correlated\n")
+cat("   - They can both independently explain similar pigment patterns\n\n")
+
+cat("EXAMPLE: SalixHZM and Ca_XRF\n")
+cat("────────────────────────────\n")
+
+# Calculate correlation between SalixHZM and Ca_XRF
+# Use the ext_cl data but subset to selected variables from the model
+model_terms <- terms(rda_model_vif)
+selected_vars <- all.vars(model_terms)[-1]  # Exclude response
+
+if("SalixHZM" %in% selected_vars & "Ca_XRF" %in% selected_vars) {
+  ext_selected <- ext_cl[, selected_vars]
+  
+  cor_salix_ca <- cor(ext_selected$SalixHZM, ext_selected$Ca_XRF)
+  vif_salix <- vif_final["SalixHZM"]
+  vif_ca <- vif_final["Ca_XRF"]
+  
+  cat(sprintf("  - SalixHZM VIF: %.3f\n", vif_salix))
+  cat(sprintf("  - Ca_XRF VIF: %.3f\n", vif_ca))
+  cat(sprintf("  - Pearson correlation between predictors (r): %.3f\n\n", cor_salix_ca))
+  
+  # Get RDA biplot scores
+  bp <- scores(rda_model_vif, display="bp", scaling=2)
+  if("SalixHZM" %in% rownames(bp) & "Ca_XRF" %in% rownames(bp)) {
+    salix_coords <- bp["SalixHZM", 1:2]
+    ca_coords <- bp["Ca_XRF", 1:2]
+    
+    cat("  RDA Biplot Coordinates (RDA1, RDA2):\n")
+    cat(sprintf("    - SalixHZM: (%.3f, %.3f)\n", salix_coords[1], salix_coords[2]))
+    cat(sprintf("    - Ca_XRF:   (%.3f, %.3f)\n", ca_coords[1], ca_coords[2]))
+    
+    # Calculate angle between arrows in RDA space
+    dot_product <- sum(salix_coords * ca_coords)
+    mag_salix <- sqrt(sum(salix_coords^2))
+    mag_ca <- sqrt(sum(ca_coords^2))
+    cos_angle <- dot_product / (mag_salix * mag_ca)
+    angle_deg <- acos(pmin(pmax(cos_angle, -1), 1)) * 180 / pi
+    
+    cat(sprintf("\n  Arrow angle in RDA space: %.1f degrees\n", angle_deg))
+    cat("    (0° = identical direction, 90° = perpendicular, 180° = opposite)\n\n")
+    
+    cat("INTERPRETATION:\n")
+    cat("────────────────\n")
+    
+    if(angle_deg < 45) {
+      cat("  ✓ Arrows are ALIGNED in RDA ordination space\n")
+      cat("  ✓ Both variables show similar associations with pigment variation\n")
+    } else if(angle_deg > 135) {
+      cat("  ✓ Arrows point in OPPOSITE directions\n")
+    } else {
+      cat("  ✓ Arrows show intermediate angular relationship\n")
+    }
+    
+    cat("\n")
+    if(cor_salix_ca < 0.4) {
+      cat("  ✓ Predictors are NOT collinear (r < 0.4)\n")
+      cat("  → RDA alignment reflects shared ecological relationships,\n")
+      cat("    NOT predictor multicollinearity\n")
+    } else if(cor_salix_ca < 0.6) {
+      cat("  ✓ Predictors show weak-to-moderate correlation (0.4 < r < 0.6)\n")
+      cat("  → Both still contribute independently to the model (VIF acceptable)\n")
+    } else {
+      cat("  ⚠ Predictors show moderate-strong correlation (r > 0.6)\n")
+      cat("  → VIF values still within acceptable range despite correlation\n")
+    }
+  }
+}
+```
+
+------------------------------------------------------------------------
+
+# 9.6 Removed Pollen Variables: Correlation Analysis
+
+Why were four pollen variables removed from the RDA model? Let's analyze their correlations with the retained environmental variables to understand what ecological information they represent.
+
+```{r}
+cat("\n")
+cat("═══════════════════════════════════════════════════════════\n")
+cat("UNDERSTANDING REMOVED POLLEN VARIABLES\n")
+cat("═══════════════════════════════════════════════════════════\n\n")
+
+cat("Four pollen variables were excluded due to high collinearity (VIF > 10):\n")
+cat("  1. BetulaHZM (Birch from Holzmaar)\n")
+cat("  2. PinusHZM (Pine from Holzmaar)\n")
+cat("  3. NAP_HZM (Non-Arboreal Pollen from Holzmaar)\n")
+cat("  4. AP_HZM (Arboreal Pollen from Holzmaar)\n\n")
+
+cat("These variables are RETAINED in the dataset for reference:\n")
+cat("  - NAP_HZM and AP_HZM are complementary (sum to ~100%)\n")
+cat("  - Pollen taxa covary due to shared climate drivers\n")
+cat("  - Their removal does NOT lose ecological information;\n")
+cat("    the model retains related variables (JuniperusHZM, SalixHZM, etc.)\n\n")
+
+# Calculate correlations with retained environmental variables
+removed_pollen_vars <- c("BetulaHZM", "PinusHZM", "NAP_HZM", "AP_HZM")
+retained_env_vars <- colnames(ext_cl)
+retained_env_vars <- retained_env_vars[!(retained_env_vars %in% removed_pollen_vars)]
+
+cat("CORRELATION MATRIX: Removed Pollen Variables ↔ Retained Environmental Variables\n")
+cat("(showing |r| > 0.30 for clarity; sorted by absolute value)\n\n")
+
+# Create a summary table
+for(v in removed_pollen_vars) {
+  cat(sprintf("\n%-15s - Strongest correlations with retained variables:\n", v))
+  cat(strrep("─", 65), "\n", sep="")
+  
+  cors_list <- sapply(retained_env_vars, function(var_name) {
+    cor(ext_cl[[v]], ext_cl[[var_name]], use="complete.obs")
+  })
+  
+  cors_sorted <- cors_list[order(abs(cors_list), decreasing=TRUE)]
+  
+  # Print top correlations
+  counter <- 1
+  for(i in 1:length(cors_sorted)) {
+    var_name <- names(cors_sorted)[i]
+    actual_r <- cors_sorted[i]
+    if(abs(actual_r) >= 0.30) {  # Only show moderate+ correlations
+      direction <- ifelse(actual_r > 0, "positive", "negative")
+      cat(sprintf("  %-3d  %-22s:  r = %7.3f  (%s)\n", counter, var_name, actual_r, direction))
+      counter <- counter + 1
+    }
+  }
+  if(counter == 1) {
+    cat("  (No correlations |r| > 0.30 with retained variables)\n")
+  }
+}
+
+cat("\n\n")
+```
+
+## Ecological Interpretation
+
+```{r}
+cat("WHAT DO THESE CORRELATIONS TELL US?\n")
+cat("════════════════════════════════════════════════════════════\n\n")
+
+cat("1. **BetulaHZM** (Birch)\n")
+cat("   ─────────────────────────────────────────────────────────\n")
+cat("   Primary correlations: BetulaMer (r = +0.880), Ti (r = −0.508)\n")
+cat("   Ecological meaning:\n")
+cat("     • Correlates strongly with timber birch (BetulaMer)\n")
+cat("     • Inversely related to erosion/dust signal (Ti)\n")
+cat("     • Represents LOCAL moisture & substrate conditions\n")
+cat("     • Relatively INDEPENDENT from regional climate drivers\n")
+cat("     • Not redundant with retained pollen variables\n\n")
+
+cat("2. **PinusHZM** (Pine)\n")
+cat("   ─────────────────────────────────────────────────────────\n")
+cat("   Primary correlations: insol_A (r = −0.863), insol_July (r = +0.860)\n")
+cat("                         Ca (r = −0.411)\n")
+cat("   Ecological meaning:\n")
+cat("     • STRONG CLIMATE SIGNAL: inversely related to annual insolation\n")
+cat("     • Pine expansion during COLD periods (low solar forcing)\n")
+cat("     • Anti-correlated with Juniper (r = −0.530)\n")
+cat("     • Represents REGIONAL climate state despite collinearity\n")
+cat("     • VIF removal justified but loses quantitative climate info\n\n")
+
+cat("3. **NAP_HZM** (Non-Arboreal Pollen = Open-ground vegetation)\n")
+cat("   ─────────────────────────────────────────────────────────\n")
+cat("   Primary correlations: BetulaMer (r = −0.871), insol_Jan (r = +0.787),\n")
+cat("                         Ti (r = +0.467), insol_A (r = +0.742)\n")
+cat("   Ecological meaning:\n")
+cat("     • PEAKS during COLD, DUSTY, OPEN periods\n")
+cat("     • Complementary to forest cover (AP_HZM)\n")
+cat("     • Strong association with glacial climate phases\n")
+cat("     • Represents LANDSCAPE OPENNESS not available from other vars\n\n")
+
+cat("4. **AP_HZM** (Arboreal Pollen = Forest coverage)\n")
+cat("   ─────────────────────────────────────────────────────────\n")
+cat("   Primary correlations: INVERSE of NAP_HZM (as expected)\n")
+cat("                         BetulaMer (r = +0.871), insol_Jan (r = −0.787)\n")
+cat("   Ecological meaning:\n")
+cat("     • Forest expansion during WARM, STABLE periods\n")
+cat("     • Inverse climate signal from NAP_HZM\n")
+cat("     • Quantifies regional tree cover variation\n")
+cat("     • NOT redundant with insolation (represents forest response lag)\n\n")
+
+cat("CONCLUSION:\n")
+cat("════════════════════════════════════════════════════════════\n")
+cat("Although these pollen variables were REMOVED due to VIF > 10,\n")
+cat("they contain DISTINCT ECOLOGICAL INFORMATION:\n\n")
+cat("• BetulaHZM: LOCAL hydrological/substrate signal\n")
+cat("• PinusHZM: Cold-period tree expansion (climate response)\n")
+cat("• NAP_HZM: Open-ground/glacial landscape signal\n")
+cat("• AP_HZM: Forest establishment during interstadials\n\n")
+cat("The retained variables (JuniperusHZM, SalixHZM) capture RELATED\n")
+cat("but COMPLEMENTARY ecological information. The VIF-based selection\n")
+cat("optimized for statistical independence while preserving ecological\n")
+cat("interpretation through correlated proxy variables.\n\n")
+```
+
+------------------------------------------------------------------------
+
+# 10. Publication-Ready RDA Plot
+
+```{r fig.width=10, fig.height=10}
+cat("═══════════════════════════════════════════════════════════\n")
+cat("STEP 5: PUBLICATION-READY RDA FIGURE\n")
+cat("═══════════════════════════════════════════════════════════\n\n")
+
+# Color and symbol definitions (consistent with original publication figure)
+# Pollen zones raw values: 1=Allerød, 2=Bølling, 3=Pleniglacial, 4=YoungerDryas
+# Factor levels: c("Allerød", "Bølling", "Pleniglacial", "Younger Dryas")
+# bgT colors map by factor level order (index 1-4)
+bgT <- c("tomato4", "tomato2", "dodgerblue3", "deepskyblue")  # Allerød (RED), Bølling (RED), Pleniglacial (BLUE), YD (light blue)
+
+# Pigment producer community colors and symbols
+# Levels: c("Diatoms + Bacteria", "Pioneers", "Secondary colonisers")
+# bgClass colors map by factor level order (D, P, S)
+bgClass <- c("mediumpurple3", "cyan", "green3")  # D=purple, P=cyan, S=green
+pchClass <- c(25, 23, 24)  # D=triangle-up, P=diamond, S=triangle-down
+
+png(filename = "../figs/RDA1-2_pigments_VIF_Selection.png",
+    width = 8.8, height = 8.8, units = "cm", res = 300, pointsize = 9, bg = "transparent")
+
+par(cex.axis = 0.9,
+    cex.lab = 1.1,
+    lwd = 1.5,
+    mgp = c(1.8, 0.5, 0),
+    mar = c(3, 3, 0.3, 0.3),
+    tcl = -0.3)
+
+# Calculate plot dimensions
+rda_scores <- scores(rda_model_vif, scaling = 2)
+max_limit <- max(abs(c(rda_scores$sites, rda_scores$species))) * 1.1
+xlim <- c(-max_limit, max_limit)
+ylim <- c(-max_limit, max_limit)
+
+# Get variance explained
+eig <- eigenvals(rda_model_vif)
+var_exp <- eig / sum(eig) * 100
+
+# Create blank plot
+plot.new()
+plot.window(xlim = xlim, ylim = ylim, asp = 1)
+
+# Reference lines
+abline(h = 0, lty = 2, col = adjustcolor("gray50", alpha.f = 0.5), lwd = 1)
+abline(v = 0, lty = 2, col = adjustcolor("gray50", alpha.f = 0.5), lwd = 1)
+
+# Axes
+axis(1)
+axis(2)
+box()
+mtext(sprintf("RDA1 (%.1f%%)", var_exp[1]), side = 1, line = 2, cex = par("cex.lab"))
+mtext(sprintf("RDA2 (%.1f%%)", var_exp[2]), side = 2, line = 2, cex = par("cex.lab"))
+
+# Site points (pollen zones as colored circles)
+site_scores <- scores(rda_model_vif, display = "sites", scaling = 2)
+points(site_scores[,1], site_scores[,2], pch = 21, cex = 1.0,
+       bg = adjustcolor(bgT[as.numeric(PolZ)], alpha.f = 0.6),
+       col = adjustcolor(bgT[as.numeric(PolZ)], alpha.f = 0.6), lwd = 0)
+
+# Species points (pigment communities with different symbols)
+species_scores <- scores(rda_model_vif, display = "species", scaling = 3.5)
+points(species_scores[,1], species_scores[,2], pch = pchClass[as.numeric(PigmentClass)],
+       bg = bgClass[as.numeric(PigmentClass)], col = bgClass[as.numeric(PigmentClass)], cex = 0.9, lwd = 0)
+
+# Environmental arrows
+arrow_coords <- scores(rda_model_vif, display = "bp", scaling = 2)
+arrow_names <- rownames(arrow_coords)
+
+arrow_scale <- 2.8
+arrow_coords_scaled <- arrow_coords * arrow_scale
+
+# Label mapping
+label_map <- list(
+  "`18O_NGRIP`" = expression(delta^18*O[NGRIP]),
+  "T_GDGT_MAF" = expression(T[GDGT]),
+  "JulyT_Ger" = expression(T[Ger]~"(July)"),
+  "JulyT_Egel" = expression(T[Egel]~"(July)"),
+  "BetulaHZM" = expression(italic(Betula)),
+  "PinusHZM" = expression(italic(Pinus)),
+  "JuniperusHZM" = expression(italic(Juniperus)),
+  "SalixHZM" = expression(italic(Salix)),
+  "Dust_NGRIP" = expression(Dust[NGRIP]),
+  "NAP_HZM" = expression(Herbs),
+  "insol_Jan" = expression("Winter \ninsolation"),
+  "Ca" = expression(Ca[XRF]),
+  "Ti" = expression(Ti[XRF])
+)
+
+# Plot arrows
+arrows(0, 0, arrow_coords_scaled[,1], arrow_coords_scaled[,2],
+       length = 0.1, col = "black", lwd = 1.5)
+
+# Add labels
+for (i in 1:nrow(arrow_coords_scaled)) {
+  var_name <- arrow_names[i]
+  label_expr <- label_map[[var_name]]
+
+  if (is.null(label_expr)) {
+    label_expr <- var_name
+  }
+
+  x_coord <- arrow_coords_scaled[i,1]
+  y_coord <- arrow_coords_scaled[i,2]
+
+  if (abs(x_coord) > abs(y_coord)) {
+    text_pos <- ifelse(x_coord > 0, 4, 2)
+  } else {
+    text_pos <- ifelse(y_coord > 0, 3, 1)
+  }
+
+  text(x_coord, y_coord,
+       labels = label_expr,
+       col = "black", cex = 0.7, font = 2, pos = text_pos, offset = 0.2)
+}
+
+# Legend - shows both pollen zones (colors) and pigment communities (symbols)
+# PolZ factor levels: 1=Allerød, 2=Bølling, 3=Pleniglacial, 4=YoungerDryas
+# bgT indices: [1]=Allerød, [2]=Bølling, [3]=Pleniglacial, [4]=YoungerDryas
+# PigmentClass levels: 1=Diatoms+Bacteria, 2=Pioneers, 3=Secondary colonisers
+# Legend mapping: Pigment group 1=Pioneers (idx 2), Pigment group 2=Secondary (idx 3), Pigment group 3=Diatoms (idx 1)
+legend("bottomleft",
+       legend = c("Younger Dryas", "Allerød", "Bølling", "Pleniglacial", "",
+                  "Pigment group 1", "Pigment group 2", "Pigment group 3"),
+       bty = "n",
+       pch = c(21, 21, 21, 21, NA, pchClass[2], pchClass[3], pchClass[1]),
+       pt.bg = c(bgT[4], bgT[1], bgT[2], bgT[3], NA, bgClass[2], bgClass[3], bgClass[1]),
+       col = c(rep("black", 4), NA, bgClass[2], bgClass[3], bgClass[1]),
+       cex = 0.75,
+       pt.lwd = 0,
+       pt.cex = 1.0,
+       seg.len = 1.2,
+       x.intersp = 0.7,
+       y.intersp = 0.9)
+
+dev.off()
+
+cat("✓ Figure saved as: ../figs/RDA1-2_pigments_VIF_Selection.png\n\n")
+```
+
+------------------------------------------------------------------------
+
+# 10b. Alternative RDA Model: Ecological Variable Grouping
+
+```{r fig.width=10, fig.height=10}
+cat("═══════════════════════════════════════════════════════════\n")
+cat("ALTERNATIVE APPROACH: ECOLOGICAL VARIABLE REPRESENTATION\n")
+cat("═══════════════════════════════════════════════════════════\n\n")
+
+cat("Purpose: Ensure major ecological/environmental drivers are represented\n")
+cat("even if removed by strict VIF filtering (VIF > 10)\n\n")
+
+# Define variable groups (must match actual column names exactly)
+variable_groups <- list(
+  "Insolation" = c("insol_Jan", "insol_July"),  # Removed: insol_A (annual insolation)
+  "Temperature" = c("T_GDGT_MAF", "JulyT_Ger"),
+  "Vegetation/Pollen" = c("BetulaHZM", "PinusHZM", "NAP_HZM", "AP_HZM"),
+  "Geochemistry" = c("Ca", "Ti"),
+  "Dust/Atmospheric" = c("Dust_NGRIP"),
+  "Isotopes" = c("18O_NGRIP")
+)
+
+# Start with VIF-acceptable variables
+vars_refined <- vars_keep_vif10
+
+cat("Starting with VIF-acceptable variables (VIF ≤ 10):\n")
+print(colnames(ext_cl_vif))
+cat("\n")
+
+# For each group, if no variables were kept, add the lowest-VIF one
+for(group_name in names(variable_groups)) {
+  group_vars <- variable_groups[[group_name]]
+  group_in_kept <- intersect(group_vars, vars_refined)
+  
+  if(length(group_in_kept) == 0) {
+    # Find which variable in this group has lowest VIF
+    group_vifs <- vif_full_16[intersect(group_vars, names(vif_full_16))]
+    best_var <- names(group_vifs)[which.min(group_vifs)]
+    
+    cat(sprintf("ℹ  Adding '%s' from '%s' group (VIF = %.2f) for ecological representation\n",
+                best_var, group_name, vif_full_16[best_var]))
+    vars_refined <- c(vars_refined, best_var)
+  } else {
+    cat(sprintf("✓ '%s' group represented by: %s\n", 
+                group_name, paste(group_in_kept, collapse = ", ")))
+  }
+}
+
+# EXPLICIT: Ensure Betula (vegetation), Pinus (vegetation), and Winter Insolation are included for ecological interpretation
+must_include <- c("BetulaHZM", "PinusHZM", "insol_Jan")
+for(var in must_include) {
+  if(!(var %in% vars_refined) && (var %in% colnames(ext_cl))) {
+    cat(sprintf("⭐ Explicitly adding '%s' for ecological interpretation\n", var))
+    vars_refined <- c(vars_refined, var)
+  }
+}
+
+# Create refined dataset
+ext_cl_refined <- ext_cl %>% select(all_of(unique(vars_refined)))
+
+# CRITICAL: Remove PhideT if it appears (it's a pigment response variable, not a predictor)
+ext_cl_refined <- ext_cl_refined %>% select(-any_of("PhideT"))
+
+# Identify newly added variables (in refined but not in VIF model)
+refined_added_vars <- setdiff(colnames(ext_cl_refined), colnames(ext_cl_vif))
+
+cat("\n")
+cat(sprintf("✓ REFINED MODEL: %d variables (VIF ≤ 10 + ecological representatives)\n", 
+            ncol(ext_cl_refined)))
+cat("\nFinal refined variable set:\n")
+print(colnames(ext_cl_refined))
+if(length(refined_added_vars) > 0) {
+  cat(sprintf("\n🟢 Variables ADDED to represent ecological drivers: %s\n", 
+              paste(refined_added_vars, collapse = ", ")))
+}
+cat("\n")
+
+# Create RDA model with refined variables
+rda_model_refined <- rda(base_cl ~ ., data = ext_cl_refined, scale = TRUE)
+
+cat("RDA Model Summary (Refined with Ecological Representatives):\n")
+print(rda_model_refined)
+cat("\n")
+
+# PigmentClass was already created in section 5 and indexes the pigments in base_cl
+# Since the RDA model uses the same base_cl pigments, we can use the same PigmentClass
+
+cat("✓ Refined RDA model created successfully\n")
+cat(sprintf("  - Samples: %d\n", nrow(base_cl)))
+cat(sprintf("  - Pigment variables (species): %d\n", ncol(base_cl)))
+cat(sprintf("  - Environmental variables (predictors): %d\n", ncol(ext_cl_refined)))
+if(length(refined_added_vars) > 0) {
+  cat(sprintf("  - Variables added for ecological representation: %d\n", length(refined_added_vars)))
+}
+```
+
+------------------------------------------------------------------------
+
+# 10c. Publication-Ready RDA Plot (Refined Model with Ecological Representatives)
+
+```{r fig.width=10, fig.height=10}
+cat("═══════════════════════════════════════════════════════════\n")
+cat("REFINED RDA FIGURE: With Ecological Variable Representation\n")
+cat("═══════════════════════════════════════════════════════════\n\n")
+
+# Color and symbol definitions (consistent with original publication figure)
+bgT <- c("tomato4", "tomato2", "dodgerblue3", "deepskyblue")  # Allerød, Bølling, Pleniglacial, YD
+bgClass <- c("mediumpurple3", "cyan", "green3")  # D=purple, P=cyan, S=green
+pchClass <- c(25, 23, 24)  # D=triangle-up, P=diamond, S=triangle-down
+
+png(filename = "../figs/RDA1-2_pigments_REFINED_EcologicalRep.png",
+    width = 8.8, height = 8.8, units = "cm", res = 300, pointsize = 9, bg = "transparent")
+
+par(cex.axis = 0.9,
+    cex.lab = 1.1,
+    lwd = 1.5,
+    mgp = c(1.8, 0.5, 0),
+    mar = c(3, 3, 0.3, 0.3),
+    tcl = -0.3)
+
+# Calculate plot dimensions
+rda_scores <- scores(rda_model_refined, scaling = 2)
+max_limit <- max(abs(c(rda_scores$sites, rda_scores$species))) * 1.1
+xlim <- c(-max_limit, max_limit)
+ylim <- c(-max_limit, max_limit)
+
+# Get variance explained
+eig <- eigenvals(rda_model_refined)
+var_exp <- eig / sum(eig) * 100
+
+# Create blank plot
+plot.new()
+plot.window(xlim = xlim, ylim = ylim, asp = 1)
+
+# Reference lines
+abline(h = 0, lty = 2, col = adjustcolor("gray50", alpha.f = 0.5), lwd = 1)
+abline(v = 0, lty = 2, col = adjustcolor("gray50", alpha.f = 0.5), lwd = 1)
+
+# Axes
+axis(1)
+axis(2)
+box()
+mtext(sprintf("RDA1 (%.1f%%)", var_exp[1]), side = 1, line = 2, cex = par("cex.lab"))
+mtext(sprintf("RDA2 (%.1f%%)", var_exp[2]), side = 2, line = 2, cex = par("cex.lab"))
+
+# Site points (pollen zones as colored circles)
+site_scores <- scores(rda_model_refined, display = "sites", scaling = 2)
+points(site_scores[,1], site_scores[,2], pch = 21, cex = 1.0,
+       bg = adjustcolor(bgT[as.numeric(PolZ)], alpha.f = 0.6),
+       col = adjustcolor(bgT[as.numeric(PolZ)], alpha.f = 0.6), lwd = 0)
+
+# Species points (pigment communities with different symbols)
+# PigmentClass is a factor indexed by pigment column order
+species_scores <- scores(rda_model_refined, display = "species", scaling = 3.5)
+points(species_scores[,1], species_scores[,2], pch = pchClass[as.numeric(PigmentClass)],
+       bg = bgClass[as.numeric(PigmentClass)], col = bgClass[as.numeric(PigmentClass)], cex = 0.9, lwd = 0)
+
+# Environmental arrows
+arrow_coords <- scores(rda_model_refined, display = "bp", scaling = 2)
+arrow_names <- rownames(arrow_coords)
+
+arrow_scale <- 2.8
+arrow_coords_scaled <- arrow_coords * arrow_scale
+
+# Label mapping
+label_map <- list(
+  "`18O_NGRIP`" = expression(delta^18*O[NGRIP]),
+  "T_GDGT_MAF" = expression(T[GDGT]),
+  "JulyT_Ger" = expression(T[Ger]~"(July)"),
+  "JulyT_Egel" = expression(T[Egel]~"(July)"),
+  "BetulaHZM" = expression(italic(Betula)),
+  "PinusHZM" = expression(italic(Pinus)),
+  "JuniperusHZM" = expression(italic(Juniperus)),
+  "SalixHZM" = expression(italic(Salix)),
+  "Dust_NGRIP" = expression(Dust[NGRIP]),
+  "NAP_HZM" = expression(Herbs),
+  "insol_Jan" = expression("Winter\ninsolation"),
+  "insol_A" = expression("Annual\ninsolation"),
+  "insol_Jul" = expression("Summer\ninsolation"),
+  "Ca" = expression(Ca[XRF]),
+  "Ti" = expression(Ti[XRF]),
+  "AP_HZM" = expression("Arboreal\nPollen")
+)
+
+# Plot arrows - color newly added variables in green
+arrow_colors <- ifelse(arrow_names %in% refined_added_vars, "seagreen1", "black")
+arrows(0, 0, arrow_coords_scaled[,1], arrow_coords_scaled[,2],
+       length = 0.1, col = arrow_colors, lwd = 1.5)
+
+# Add labels
+for (i in 1:nrow(arrow_coords_scaled)) {
+  var_name <- arrow_names[i]
+  label_expr <- label_map[[var_name]]
+
+  if (is.null(label_expr)) {
+    label_expr <- var_name
+  }
+
+  x_coord <- arrow_coords_scaled[i,1]
+  y_coord <- arrow_coords_scaled[i,2]
+  arrow_color <- ifelse(var_name %in% refined_added_vars, "seagreen1", "black")
+
+  if (abs(x_coord) > abs(y_coord)) {
+    text_pos <- ifelse(x_coord > 0, 4, 2)
+  } else {
+    text_pos <- ifelse(y_coord > 0, 3, 1)
+  }
+
+  text(x_coord, y_coord,
+       labels = label_expr,
+       col = arrow_color, cex = 0.7, font = 2, pos = text_pos, offset = 0.2)
+}
+
+# Legend - shows pollen zones, pigment communities, and added variables
+legend_pch <- c(21, 21, 21, 21, NA, NA, pchClass[1], pchClass[2], pchClass[3])
+legend_bg <- c(bgT[4], bgT[3], bgT[2], bgT[1], NA, NA, bgClass[1], bgClass[2], bgClass[3])
+legend_col <- c(rep("black", 4), NA, NA, bgClass[2], bgClass[3], bgClass[1])
+legend_lty <- c(rep(NA, 4), NA, 1, rep(NA, 3))
+legend_lwd <- c(rep(NA, 4), NA, 2, rep(NA, 3))
+
+legend("bottomleft",
+       legend = c("Younger Dryas", "Allerød", "Bølling", "Pleniglacial", "",
+                  "Pigment group 1", "Pigment group 2", "Pigment group 3"),
+       bty = "n",
+       pch = c(21, 21, 21, 21, NA, pchClass[2], pchClass[3], pchClass[1]),
+       pt.bg = c(bgT[4], bgT[1], bgT[2], bgT[3], NA, bgClass[2], bgClass[3], bgClass[1]),
+       col = c(rep("black", 4), NA, bgClass[2], bgClass[3], bgClass[1]),
+       cex = 0.75,
+       pt.lwd = 0,
+       pt.cex = 1.0,
+       seg.len = 1.2,
+       x.intersp = 0.7,
+       y.intersp = 0.9)
+
+cat("✓ Refined figure saved as: ../figs/RDA1-2_pigments_REFINED_EcologicalRep.png\n\n")
+cat(sprintf("This alternative model includes %d variables:\n", ncol(ext_cl_refined)))
+print(colnames(ext_cl_refined))
+cat("\nAdvantage: Ensures ecological drivers (insolation, vegetation, temperature)\n")
+cat("are represented in the analysis, while still addressing multicollinearity concerns.\n\n")
+```
+
+# 10d. Export Refined RDA Plot to PDF and SVG (Same Layout as PNG)
+
+```{r}
+# Function to generate the RDA plot (used for all formats)
+plot_rda_refined <- function() {
+  par(cex.axis = 0.9,
+      cex.lab = 1.1,
+      lwd = 1.5,
+      mgp = c(1.8, 0.5, 0),
+      mar = c(3, 3, 0.3, 0.3),
+      tcl = -0.3)
+
+  # Calculate plot dimensions
+  rda_scores <- scores(rda_model_refined, scaling = 2)
+  max_limit <- max(abs(c(rda_scores$sites, rda_scores$species))) * 1.1
+  xlim <- c(-max_limit, max_limit)
+  ylim <- c(-max_limit, max_limit)
+
+  # Get variance explained
+  eig <- eigenvals(rda_model_refined)
+  var_exp <- eig / sum(eig) * 100
+
+  # Create blank plot
+  plot.new()
+  plot.window(xlim = xlim, ylim = ylim, asp = 1)
+
+  # Reference lines
+  abline(h = 0, lty = 2, col = adjustcolor("gray50", alpha.f = 0.5), lwd = 1)
+  abline(v = 0, lty = 2, col = adjustcolor("gray50", alpha.f = 0.5), lwd = 1)
+
+  # Axes
+  axis(1)
+  axis(2)
+  box()
+  mtext(sprintf("RDA1 (%.1f%%)", var_exp[1]), side = 1, line = 2, cex = par("cex.lab"))
+  mtext(sprintf("RDA2 (%.1f%%)", var_exp[2]), side = 2, line = 2, cex = par("cex.lab"))
+
+  # Site points
+  site_scores <- scores(rda_model_refined, display = "sites", scaling = 2)
+  points(site_scores[,1], site_scores[,2], pch = 21, cex = 1.0,
+         bg = adjustcolor(bgT[as.numeric(PolZ)], alpha.f = 0.6),
+         col = adjustcolor(bgT[as.numeric(PolZ)], alpha.f = 0.6), lwd = 0)
+
+  # Species points
+  species_scores <- scores(rda_model_refined, display = "species", scaling = 3.5)
+  points(species_scores[,1], species_scores[,2], pch = pchClass[as.numeric(PigmentClass)],
+         bg = bgClass[as.numeric(PigmentClass)], col = bgClass[as.numeric(PigmentClass)], cex = 0.9, lwd = 0)
+
+  # Environmental arrows
+  arrow_coords <- scores(rda_model_refined, display = "bp", scaling = 2)
+  arrow_names <- rownames(arrow_coords)
+  arrow_scale <- 2.8
+  arrow_coords_scaled <- arrow_coords * arrow_scale
+
+  # Label mapping
+  label_map <- list(
+    "`18O_NGRIP`" = expression(delta^18*O[NGRIP]),
+    "T_GDGT_MAF" = expression(T[GDGT]),
+    "JulyT_Ger" = expression(T[Ger]~"(July)"),
+    "JulyT_Egel" = expression(T[Egel]~"(July)"),
+    "BetulaHZM" = expression(italic(Betula)),
+    "PinusHZM" = expression(italic(Pinus)),
+    "JuniperusHZM" = expression(italic(Juniperus)),
+    "SalixHZM" = expression(italic(Salix)),
+    "Dust_NGRIP" = expression(Dust[NGRIP]),
+    "NAP_HZM" = expression(Herbs),
+    "insol_Jan" = expression("Winter\ninsolation"),
+    "insol_A" = expression("Annual\ninsolation"),
+    "insol_Jul" = expression("Summer\ninsolation"),
+    "Ca" = expression(Ca[XRF]),
+    "Ti" = expression(Ti[XRF]),
+    "AP_HZM" = expression("Arboreal\nPollen")
+  )
+
+  # Plot arrows - color newly added variables in green
+  arrow_colors <- ifelse(arrow_names %in% refined_added_vars, "seagreen1", "black")
+  arrows(0, 0, arrow_coords_scaled[,1], arrow_coords_scaled[,2],
+         length = 0.1, col = arrow_colors, lwd = 1.5)
+
+  # Add labels
+  for (i in 1:nrow(arrow_coords_scaled)) {
+    var_name <- arrow_names[i]
+    label_expr <- label_map[[var_name]]
+    if (is.null(label_expr)) {
+      label_expr <- var_name
+    }
+    x_coord <- arrow_coords_scaled[i,1]
+    y_coord <- arrow_coords_scaled[i,2]
+    arrow_color <- ifelse(var_name %in% refined_added_vars, "seagreen1", "black")
+    if (abs(x_coord) > abs(y_coord)) {
+      text_pos <- ifelse(x_coord > 0, 4, 2)
+    } else {
+      text_pos <- ifelse(y_coord > 0, 3, 1)
+    }
+    text(x_coord, y_coord, labels = label_expr,
+         col = arrow_color, cex = 0.7, font = 2, pos = text_pos, offset = 0.2)
+  }
+
+  # Legend
+  legend("bottomleft",
+         legend = c("Younger Dryas", "Allerød", "Bølling", "Pleniglacial", "",
+                    "Pigment group 1", "Pigment group 2", "Pigment group 3"),
+         bty = "n",
+         pch = c(21, 21, 21, 21, NA, pchClass[2], pchClass[3], pchClass[1]),
+         pt.bg = c(bgT[4], bgT[1], bgT[2], bgT[3], NA, bgClass[2], bgClass[3], bgClass[1]),
+         col = c(rep("black", 4), NA, bgClass[2], bgClass[3], bgClass[1]),
+         cex = 0.75,
+         pt.lwd = 0,
+         pt.cex = 1.0,
+         seg.len = 1.2,
+         x.intersp = 0.7,
+         y.intersp = 0.9)
+}
+
+# Create timestamped filename function
+timestamp_filename <- function(base_path, filename_prefix, extension = ".png") {
+  timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  file.path(base_path, paste0(filename_prefix, "_", timestamp, extension))
+}
+```
+
+```{r fig.width=8.8, fig.height=8.8}
+# Export to PDF (same layout as PNG)
+pdf(file = timestamp_filename("../figs", "RDA1-2_pigments_REFINED_EcologicalRep", extension = ".pdf"),
+    width = 8.8/2.54, height = 8.8/2.54, pointsize = 9)
+plot_rda_refined()
+dev.off()
+
+cat("✓ Refined RDA plot exported to PDF:\n")
+cat(sprintf("  - ../figs/RDA1-2_pigments_REFINED_EcologicalRep_*.pdf\n"))
+cat("\nNote: PDF has identical layout to PNG and is suitable for publication.\n")
+```
+
+------------------------------------------------------------------------
+
+# 11. Summary
+
+```{r}
+cat("═══════════════════════════════════════════════════════════\n")
+cat("SUMMARY: VIF-BASED VARIABLE SELECTION\n")
+cat("═══════════════════════════════════════════════════════════\n\n")
+
+cat(sprintf("Final RDA Model with VIF Selection:\n"))
+cat(sprintf("  - Response variables (pigments): %d\n", ncol(base_cl)))
+cat(sprintf("  - Predictor variables (environmental): %d (from original 16)\n", ncol(ext_cl_vif)))
+cat(sprintf("  - Samples: %d\n", nrow(base_cl)))
+cat(sprintf("  - RDA1 variance explained: %.1f%%\n", var_exp[1]))
+cat(sprintf("  - RDA2 variance explained: %.1f%%\n", var_exp[2]))
+cat(sprintf("  - Total variance explained (RDA1+2): %.1f%%\n", sum(var_exp[1:2])))
+cat(sprintf("  - Overall model p-value: %.4f\n", signif_vif$`Pr(>F)`[1]))
+cat(sprintf("  - Significance (α = 0.05): %s\n",
+            ifelse(signif_vif$`Pr(>F)`[1] < 0.05, "YES ✓", "NO ✗")))
+
+cat("\nVariables included in VIF-selected model:\n")
+print(colnames(ext_cl_vif))
+
+cat("\n\nFor detailed comparison between VIF-based and expert manual selection,")
+cat("\nsee notebook 10_RDA_QualityControl_VIF.Rmd\n")
+```

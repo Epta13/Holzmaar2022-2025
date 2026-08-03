@@ -57,13 +57,13 @@ if("Bphe_calibrated" %in% colnames(hsi_data_raw)) {
 }
 
 # Load FULL SOURCE external data (before interpolation) for maximum coverage
-insol_full <- read.csv("../data/SourceData/External/csvs/insolation_data.csv", sep = ";")
+insol_full <- read.csv("../data/SourceData/External/csvs/Insolation.csv", sep = ";")
 insol_full <- insol_full %>% rename(age = age, insol_July = July.insolation, insol_Jan = January.insolation)
 
-ngrip_full <- read.csv("../data/SourceData/External/csvs/ngrip_oxygen_isotopes.csv", sep = ";")
+ngrip_full <- read.csv("../data/SourceData/External/csvs/NGRIP.csv", sep = ";")
 ngrip_full <- ngrip_full %>% rename(age = age_VT22, `18O_NGRIP` = Delta.O18..permil.)
 
-gerzensee_full <- read.csv("../data/SourceData/External/csvs/gerzensee_temperature.csv", sep = ";")
+gerzensee_full <- read.csv("../data/SourceData/External/csvs/Gerzensee.csv", sep = ";")
 gerzensee_full <- gerzensee_full %>% rename(JulyT_Ger = JulyT)
 
 # Load Heiri2015 temperature data (Alpine stack July T with confidence intervals)
@@ -82,11 +82,12 @@ heiri_full <- heiri_full %>%
   filter(!is.na(age), !is.na(JulyT_Heiri), age > 1)
 
 # Load Auel GDGT temperature data (using Ragberg_Zander calibration)
-gdgt_full <- read_excel("../data/SourceData/External/Auel_ELSA_stack_GDGT.xlsx")
+gdgt_full <- read_excel("../data/SourceData/External/GDGT_new_standardized.xlsx")
 gdgt_full <- gdgt_full %>% 
   select(age_calBP, MAF_Ragberg_Zander) %>%
   rename(age = age_calBP, JulyT_GDGT = MAF_Ragberg_Zander) %>%
   filter(!is.na(age), !is.na(JulyT_GDGT), age >= 0)
+
 
 # Interpolate GDGT to match HSI resolution using approx()
 # Extract HSI age scale
@@ -104,13 +105,12 @@ gdgt_combined <- gdgt_full %>%
   full_join(gdgt_interpolated, by = "age") %>%
   arrange(age)
 
-pollen_full <- read.csv("../data/SourceData/External/csvs/holzmaar_pollen_records.csv", sep = ";")
+pollen_full <- read.csv("../data/SourceData/External/csvs/HolzPol.csv", sep = ";")
 pollen_full <- pollen_full %>% rename(BetulaHZM = Betula, PinusHZM = Pinus)
 
 # Load modelled Pinus data to extend coverage (13258-10995 BP)
 pollen_modelled <- read.csv("../data/HolzPol_predicted_13258-10995.csv")
-pollen_modelled <- pollen_modelled %>% select(Age_BP, Pinus) %>% 
-  rename(age = Age_BP, PinusHZM = Pinus)
+pollen_modelled <- pollen_modelled %>% select(age, Pinus) %>% rename(PinusHZM = Pinus)
 
 # Combine original pollen and modelled data
 pollen_combined <- bind_rows(
@@ -877,7 +877,7 @@ p_communities_pct <- ggplot(pig_communities_pct, aes(x = age, y = value, fill = 
         legend.position = "right",
         plot.title = element_text(size = 12, face = "bold"))
 
-print(p_communities_pct)
+#print(p_communities_pct)
 ```
 
 ```{r fig.width=8.27, fig.height=3}
@@ -1284,17 +1284,17 @@ Pig_by_group_norm_plot_v2 <- Pig_by_group_norm_v2 %>% select(age, Pioneers, Seco
 # Stacking order from bottom to top: Pioneers (base), Secondary colonisers (middle), Diatoms + Bacteria (top)
 p_pig_norm_v2 <- ggplot() +
   geom_ribbon(data = Pig_by_group_norm_plot_v2, 
-              aes(x = age, ymin = 0, ymax = Pioneers, fill = "Pioneers"), 
+              aes(x = age, ymin = 0, ymax = Pioneers, fill = "Pigment group 1"), 
               alpha = 0.5) +
   geom_ribbon(data = Pig_by_group_norm_plot_v2, 
-              aes(x = age, ymin = Pioneers, ymax = Pioneers + Secondary_colonisers, fill = "Secondary colonisers"), 
+              aes(x = age, ymin = Pioneers, ymax = Pioneers + Secondary_colonisers, fill = "Pigment group 2"), 
               alpha = 0.5) +
   geom_ribbon(data = Pig_by_group_norm_plot_v2, 
-              aes(x = age, ymin = Pioneers + Secondary_colonisers, ymax = 100, fill = "Diatoms + Bacteria"), 
+              aes(x = age, ymin = Pioneers + Secondary_colonisers, ymax = 100, fill = "Pigment group 3"), 
               alpha = 0.5) +
-  scale_fill_manual(values = c("Pioneers" = "cyan",
-                                "Secondary colonisers" = "green3",
-                                "Diatoms + Bacteria" = "mediumpurple3"), name = "") +
+  scale_fill_manual(values = c("Pigment group 1" = "cyan",
+                                "Pigment group 2" = "green3",
+                                "Pigment group 3" = "mediumpurple3"), name = "") +
   scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
   scale_y_continuous(position = "right", expand = c(0, 0), limits = c(0, 100)) +
   labs(x = "", y = "Pigment Communities\n(%, normalized)") +
@@ -1560,17 +1560,17 @@ temp_y_limits_gdgt <- c(min(gdgt_y_range[1], ger_y_range[1]) - 0.1, max(gdgt_y_r
 # Recreate pigment plot with smaller fonts
 p_pig_norm_panel <- ggplot() +
   geom_ribbon(data = Pig_by_group_norm_plot_v2, 
-              aes(x = age, ymin = 0, ymax = Pioneers, fill = "Pioneers"), 
+              aes(x = age, ymin = 0, ymax = Pioneers, fill = "Pigment group 1"), 
               alpha = 0.5) +
   geom_ribbon(data = Pig_by_group_norm_plot_v2, 
-              aes(x = age, ymin = Pioneers, ymax = Pioneers + Secondary_colonisers, fill = "Secondary colonisers"), 
+              aes(x = age, ymin = Pioneers, ymax = Pioneers + Secondary_colonisers, fill = "Pigment group 2"), 
               alpha = 0.5) +
   geom_ribbon(data = Pig_by_group_norm_plot_v2, 
-              aes(x = age, ymin = Pioneers + Secondary_colonisers, ymax = 100, fill = "Diatoms + Bacteria"), 
+              aes(x = age, ymin = Pioneers + Secondary_colonisers, ymax = 100, fill = "Pigment group 3"), 
               alpha = 0.5) +
-  scale_fill_manual(values = c("Pioneers" = "cyan",
-                                "Secondary colonisers" = "green3",
-                                "Diatoms + Bacteria" = "mediumpurple3"), name = "") +
+  scale_fill_manual(values = c("Pigment group 1" = "cyan",
+                                "Pigment group 2" = "green3",
+                                "Pigment group 3" = "mediumpurple3"), name = "") +
   scale_x_continuous(limits = age_limits, expand = c(0, 0)) +
   scale_y_continuous(position = "right", expand = c(0, 0), limits = c(0, 100)) +
   labs(x = "", y = "Pigment Communities\n(%, normalized)") +
@@ -1718,7 +1718,7 @@ p4_7_panel <- ggplot() +
     position = "right",
     labels = function(x) round((x - offset_gdgt) / scaling_factor_gdgt, 1)
   ) +
-  labs(x = "", y = "GDGT Temp.\n(°C)") +
+  labs(x = "", y = "GDGT Temp.\n(MAF °C)") +
   theme_classic() +
   theme(axis.text = element_text(size = 7),
         axis.text.x = element_blank(),

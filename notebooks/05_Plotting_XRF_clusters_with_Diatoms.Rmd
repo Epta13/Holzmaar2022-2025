@@ -1,0 +1,588 @@
+---
+title: "Plotting XRF data with Diatom Counts"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Plotting PCA-selected data with clusters and HSI, including diatom counts
+
+Installing packages and loading libraries
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#install.packages("pacman")
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(pacman)
+
+pacman::p_load(cluster, factoextra, FactoMineR, readxl, magrittr, readxl, dplyr, tidyr, openxlsx, vegan, ggplot2, rioja, psych, dendroextras, rcartocolor, latex2exp, ggsci, ggpubr, corrplot, viridis, cowplot, tidypaleo, grid, ggtext, bruceR, gapminer, forcats, ggthemes, ggmap, maps, ggimage, magick)
+```
+
+```{r}
+# Create timestamped filename function
+timestamp_filename <- function(base_path, filename_prefix, extension = ".png") {
+  timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  file.path(base_path, paste0(filename_prefix, "_", timestamp, extension))
+}
+```
+
+# Load and prepare data
+
+```{r}
+XRF_data <- read_excel("../data/XRF_clustered_PC.xlsx", col_types = "numeric")
+HSI_data <- read_excel("../data/HZM_HR_cleaned.xlsx", col_types = "numeric")
+
+# Load total diatom valve counts from Lujan's data (from SourceData subdirectory)
+diatom_data <- read_excel("../data/SourceData/diatoms_Lujan.xlsx", sheet = "total_abundance", col_types = "numeric")
+```
+
+```{r}
+depth_m <- XRF_data$`Composite depth (mm)`/1000
+
+HSI_data <- HSI_data %>% mutate(Zone = case_when(mean_VT22 > 14444 ~ "Pleniglacial",
+                          mean_VT22  <= 14444 & mean_VT22  >= 13611  ~ "Bölling",
+                          mean_VT22  <= 13611 & mean_VT22  >= 12727 & mean_VT22!=13011  ~ "Alleröd", 
+                          mean_VT22 == 13011 ~ "LST",
+                          mean_VT22  <= 12727 ~ "Younger Dryas")
+  )
+```
+
+```{r}
+Hclust1 <- as.factor(XRF_data$Hclust)
+CONISS1 <- as.factor(XRF_data$cluster_CONISS)
+```
+
+```{r}
+labels <- data.frame("depth" = seq(10989, 13822, by = 200))
+depth_age <- LOOKUP(labels, c("depth"), HSI_data, c("depth_VT22"), "mean_VT22")
+names(depth_age)[names(depth_age)=="mean_VT22"] <- "age"
+ages <- rev(as.vector(depth_age$age))
+```
+
+```{r}
+PollenZ <- data.frame("age" = c(15342, 14444, 13611, 13011, 12727, 11625), "zone" = c("Pleniglacial", "Bølling", "Allerød", "LST", "Younger Dryas", ""))
+PollenZ <- LOOKUP(PollenZ, c("age"), HSI_data, c("mean_VT22"), "depth_VT22")
+PollenZ$depth <- PollenZ$depth_VT22/1000
+
+PollenZ <- PollenZ %>% mutate(color= case_when(zone == "Pleniglacial" ~ "blue",
+                           zone == "Bølling" ~ "red",
+                           zone == "Allerød" ~ "red", 
+                          zone == "LST" ~ "lightgray", 
+                           zone == "Younger Dryas" ~ "blue"))
+
+PollenZ <- PollenZ %>% mutate(line= case_when(zone == "Pleniglacial" ~ "solid",
+                           zone == "Bølling" ~ "solid",
+                           zone == "Allerød" ~ "solid", 
+                          zone == "LST" ~ "solid", 
+                           zone == "Younger Dryas" ~ "solid"))
+
+PollenZ <- PollenZ %>% mutate(aplha= case_when(zone == "Pleniglacial" ~ "0.8",
+                           zone == "Bølling" ~ "0.8",
+                           zone == "Allerød" ~ "0.8", 
+                          zone == "LST" ~ "0.2", 
+                           zone == "Younger Dryas" ~ "0.8"))
+```
+
+# Prepare Diatom Data
+
+```{r}
+# Explore diatom data structure
+cat("Diatom data (total abundance) columns:\n")
+print(names(diatom_data))
+cat("\nDiatom data dimensions:\n")
+print(dim(diatom_data))
+cat("\nDiatom data summary:\n")
+print(head(diatom_data))
+
+# Get depth column and total valve counts from diatom data
+diatom_depth_col <- grep("depth|Depth|DEPTH", names(diatom_data), ignore.case = TRUE)[1]
+if (!is.na(diatom_depth_col)) {
+  diatom_depth <- diatom_data[[diatom_depth_col]] / 1000  # convert to meters if needed
+  diatom_counts <- diatom_data[[setdiff(1:ncol(diatom_data), diatom_depth_col)[1]]]  # get the total counts column
+} else {
+  # Assume first column is depth, second is total counts
+  diatom_depth <- diatom_data[[1]] / 1000
+  diatom_counts <- diatom_data[[2]]
+}
+
+cat("\nTotal diatom valve count range:\n")
+print(summary(diatom_counts))
+
+# Create a data frame for strat.plot-style visualization
+diatom_strat_data <- data.frame(depth = diatom_depth, counts = diatom_counts)
+cat("\nDiatom strat data created with", nrow(diatom_strat_data), "samples\n")
+```
+
+# Plotting selected elements from the XRF
+
+```{r}
+# Titanium plot
+Ti <- ggplot(XRF_data, aes(x=Ti, y= depth_m))+
+    geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
+  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 0.2), digits = 2), expand=c(0,0)) +
+  geom_path(alpha=.8, linewidth =1, colour = "black")+
+  scale_x_continuous(position = "bottom", expand=c(0,0))+ 
+  labs(title = " ", x = "Ti (clr)\nDetrital input", y = " Depth (m) ")+
+  theme_classic() +
+  theme(legend.position="none", plot.caption=element_text(size=12, hjust=0), 
+        axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,0.5), "cm"), panel.background = element_blank())
+
+# Iron plot
+Fe <- ggplot(XRF_data, aes(x=Fe, y= depth_m))+
+  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"),expand=c(0,0)) +
+  scale_x_continuous(position = "top", expand=c(0,0))+
+  geom_path(alpha=.8, linewidth =1, colour = "orange") +
+  labs(title = " ", x = " Fe (clr)", y = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,-1), "cm"), panel.background = element_blank())
+
+# Calcium plot
+Ca <- ggplot(XRF_data, aes(x=Ca, y= depth_m))+
+    geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
+  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
+  scale_x_continuous(position = "top", expand=c(0,0))+
+  geom_path(alpha=.8, linewidth =1, colour = "skyblue") +
+  labs(title = " ", x = "Carbonate precipitation \n Ca (clr)", y = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,-0.2), "cm"), panel.background = element_blank())
+
+# Silica plot
+Si <- ggplot(XRF_data, aes(x=Si, y= depth_m))+
+  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
+  scale_x_continuous(position = "top", expand=c(0,0))+
+  geom_path(alpha=.8, linewidth =1, colour = "darkgrey") +
+  labs(title = " ", x = " Si (clr)", y = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(), axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,-1), "cm"), panel.background = element_blank())
+```
+
+# COMBINED PLOT: Stratigraphic-style diatom bars with Si/Ti curve
+
+```{r}
+# Calculate Si/Ti ratio
+SiTi <- XRF_data$Si/XRF_data$Ti
+
+# Plot 1: Diatom total valve counts as horizontal bars (strat.plot style) - x-axis at TOP
+valve <- ggplot(diatom_data, aes(y=diatom_data$`Valves/gr`, x=diatom_data$`comp_depth_(mm)`))+
+  #geom_point(colour = "blue", size= 0.01)+
+  geom_bar(stat = "identity", width = 25, fill = "steelblue", alpha = 0.6)+
+scale_x_reverse(limits = c(13822, 10989), breaks = round(seq(10989, 13822, by = 1), digits = 2), expand = c(0,0)) +
+    scale_y_continuous(position = 'right') +
+ #geom_path(alpha=.8, size=0.2, colour = "blue") +
+  theme_classic() +
+        scale_fill_viridis_d(option = "H")+
+   coord_flip()+ 
+  labs(title = " ", y = "diatom \n valves/g", x = " ") +
+theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank())
+
+valve
+
+# Plot 2: Si/Ti curve (line) with x-axis at BOTTOM
+SiTip <- ggplot(data = XRF_data, aes(x = SiTi, y = depth_m)) +
+  geom_path(alpha = 0.9, linewidth = 1.3, colour = "darkblue") +
+  geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color = PollenZ$color, alpha = 0.8, size = 0.6) +
+  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), 
+                  guide = guide_axis(position = "right"), expand = c(0,0)) +
+  scale_x_continuous(position = "bottom", expand = c(0,0)) +
+  labs(title = " ", x = "Si/Ti (Diatoms)", y = " ") +
+  theme_classic(base_size = 11) +
+  theme(legend.position = "none", 
+        axis.ticks.y = element_blank(), 
+        axis.line.y = element_blank(), 
+        axis.text.y = element_blank(),
+        axis.text = element_text(size = 13),
+        axis.title.y = element_blank(),
+        plot.margin = unit(c(0, 0, 0.5, -0.9), "cm"), 
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+
+SiTip
+```
+
+# Additional XRF-derived plots
+
+```{r}
+# Manganese plot
+Mn <- ggplot(XRF_data, aes(x=Mn, y= depth_m))+
+  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
+  scale_x_continuous(position = "top", expand=c(0,0))+
+  geom_path(alpha=.8, linewidth =1, colour = "brown") +
+  labs(title = " ", x = "Mn (clr)", y = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),
+        axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,-1), "cm"), panel.background = element_blank())
+
+# Sulfur plot
+S <- ggplot(XRF_data, aes(x=S, y= depth_m))+
+  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
+  scale_x_continuous(position = "bottom", expand=c(0,0))+
+  geom_path(alpha=.8, linewidth =1, colour = "goldenrod") +
+  labs(title = " ", x = "S (clr)", y = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),
+        axis.text = element_text(size = 12), plot.margin = unit(c(0,0,0.5,-1), "cm"), panel.background = element_blank())
+
+# Chromium coherence/incoherence ratio
+Crom <- ggplot(XRF_data, aes(x= Crinc_coh, y= depth_m))+
+  geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
+  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
+  scale_x_continuous(position = "top", expand=c(0,0), labels = scales::number_format(accuracy = 0.1))+
+  geom_path(alpha=.8, linewidth =1, colour = "brown") +
+  labs(title = " ", x = "Organic matter\nCr[inc]/Cr[coh]", y = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),
+        axis.text = element_text(size = 10), plot.margin = unit(c(0,0,0.5,-0.9), "cm"), panel.background = element_blank())
+
+# PC1 axis
+PC1ax <- ggplot(XRF_data, aes(x= PC1, y= depth_m))+
+  geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
+  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
+  scale_x_continuous(position = "bottom", expand=c(0,0))+
+  geom_path(alpha=.8, linewidth =1, colour = "lightblue") +
+  geom_vline(xintercept=0, color="lightblue", linetype = 2) +
+  labs(title = " ", x = "PC1\nAutochtonous <-> Allochtonous", y = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),
+        axis.text = element_text(size = 12), plot.margin = unit(c(0,-0.2,0.5,0), "cm"), panel.background = element_blank())
+
+# PC2 axis
+PC2ax <- ggplot(XRF_data, aes(x= PC2, y= depth_m))+
+  geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color= PollenZ$color, alpha = 0.8)+
+  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), guide = guide_axis(position = "right"), expand=c(0,0)) +
+  scale_x_continuous(position = "top", expand=c(0,0))+
+  geom_path(alpha=.8, linewidth =1, colour = "grey") +
+  geom_vline(xintercept=0, color="grey", linetype = 2) +
+  labs(title = " ", x = "Organic/Redox <-> Minerals\nPC2", y = " ") +
+  theme_classic() +
+  theme(legend.position="none", axis.ticks.y= element_blank(), axis.line.y = element_blank(), axis.text.y = element_blank(),
+        axis.text = element_text(size = 12), plot.margin = unit(c(0,0.1,0.5,-1.1), "cm"), panel.background = element_blank())
+
+# Hierarchical clustering
+p4 <- ggplot(XRF_data, aes(x = 0.05, y = order)) +
+  geom_tile(aes(fill = Hclust1)) +
+  scale_y_reverse(limits = c(2827,1), breaks = round(seq(1, 2827, by = 10), digits = 0), expand=c(0,0)) +
+  scale_x_continuous(position = "bottom", expand=c(0,0))+
+  labs(title = " ", x = "HClust", y = " ") +
+  scale_fill_viridis_d(option = "H") +
+  theme_classic() +
+  theme(legend.position="none", axis.text = element_blank(), axis.line.x = element_line(colour = "white"),
+        axis.ticks= element_blank(), axis.line.y = element_blank(), plot.margin = unit(c(0,0,0.5,-1.1), "cm"),
+        panel.background = element_blank())
+
+# CONISS clustering
+p5 <- ggplot(XRF_data, aes(x = 0.05, y = order_CONISS)) +
+  geom_tile(aes(fill = CONISS1)) +
+  scale_y_reverse(limits = c(2827,1), breaks = round(seq(1, 2827, by = 10), digits = 0), expand=c(0,0)) +
+  scale_x_continuous(position = "top", expand=c(0,0))+
+  labs(title = " ", x = "CONISS", y = " ") +
+  scale_fill_brewer(palette = "Dark2")+
+  theme_classic() +
+  theme(legend.position="none", axis.text = element_blank(), axis.line.x = element_line(colour = "white"),
+        axis.ticks= element_blank(), axis.line.y = element_blank(), plot.margin = unit(c(0,0,0.5,-0.8), "cm"),
+        panel.background = element_blank())
+
+cat("✓ All XRF plots created: Ti, Fe, Ca, Si, Mn, S, Crom, PC1ax, PC2ax, p4 (HClust), p5 (CONISS)\n")
+```
+
+# Display diatom data summary
+
+```{r}
+cat("\n=== DIATOM VALVE COUNTS SUMMARY ===\n")
+cat("Source: diatoms_Lujan.xlsx - 'total_abundance' sheet\n")
+cat("Number of samples:", length(diatom_counts), "\n\n")
+cat("Total valve count statistics:\n")
+print(summary(diatom_counts))
+cat("\nDepth range (m):", min(diatom_depth), "to", max(diatom_depth), "\n")
+cat("Depth span:", max(diatom_depth) - min(diatom_depth), "m\n")
+```
+
+# Diatom valve counts plot
+
+```{r}
+# Create valve plot - total diatom abundances per gram
+valve_depth <- diatom_data$`comp_depth_(mm)` / 1000
+
+valve_plot <- ggplot(diatom_data, aes(y = `Valves/gr`, x = valve_depth)) +
+  geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color = PollenZ$color, alpha = 0.8) +
+  geom_bar(stat = "identity", width = 0.02, fill = "steelblue") +
+  scale_x_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), expand = c(0, 0)) +
+  scale_y_continuous(position = 'right', expand = c(0, 0), labels = scales::scientific) +
+  coord_flip() +
+  theme_classic() +
+  labs(title = " ", y = "Total Diatom\nValves/gr", x = " ") +
+  theme(legend.position = "none", 
+        axis.ticks.y = element_blank(), 
+        axis.line.y = element_blank(), 
+        axis.text.y = element_blank(),
+        axis.text = element_text(size = 13),
+        plot.margin = unit(c(0, 0, 0.5, -0.9), "cm"), 
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+
+cat("\n✓ Valve plot created: Total diatom abundance visualization\n")
+```
+
+# Si/Ti and Diatom Valve Overlay Plot (true dual-axis)
+
+```{r}
+# Convert diatom depth from mm to m
+diatom_depth_m <- diatom_data$`comp_depth_(mm)` / 1000
+
+# Debug: Check diatom depth values
+cat("\n=== DIATOM DEPTH DEBUG ===\n")
+cat("Diatom depth (mm) range:", min(diatom_data$`comp_depth_(mm)`, na.rm = T), "to", max(diatom_data$`comp_depth_(mm)`, na.rm = T), "\n")
+cat("Diatom depth (m) range:", min(diatom_depth_m, na.rm = T), "to", max(diatom_depth_m, na.rm = T), "\n")
+cat("Plot limits (m): 13.822 to 10.989\n")
+cat("Diatom sample count:", nrow(diatom_data), "\n")
+cat("Diatom valve counts range:", min(diatom_data$`Valves/gr`, na.rm = T), "to", max(diatom_data$`Valves/gr`, na.rm = T), "\n")
+
+# Calculate Si/Ti ratio
+SiTi <- XRF_data$Si / XRF_data$Ti
+
+# Scaling factor to align Si/Ti axis with valve counts for visualization
+# (Si/Ti typically ranges 0-2, valves/gr ranges 1e7-1e8)
+scale_factor <- max(diatom_data$`Valves/gr`, na.rm = TRUE) / max(SiTi, na.rm = TRUE)
+
+cat("Scale factor:", scale_factor, "\n")
+cat("Si/Ti range:", min(SiTi, na.rm = T), "to", max(SiTi, na.rm = T), "\n")
+cat("Si/Ti scaled range:", min(SiTi * scale_factor, na.rm = T), "to", max(SiTi * scale_factor, na.rm = T), "\n\n")
+
+# Create dual-axis overlay plot
+overlay_plot <- ggplot() +
+      # Pollen zones background
+geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color = PollenZ$color, alpha = 0.8) +
+# Si/Ti as line (scaled to match valve axis for visualization)
+  geom_path(data = data.frame(depth = depth_m, SiTi_scaled = SiTi * scale_factor),
+            aes(x = SiTi_scaled, y = depth, color = "Si/Ti Ratio"), 
+            linewidth = 1.2, alpha = 0.8) +
+  # Valve counts as vertical segments/bars from 0 to valve count value
+  geom_segment(data = diatom_data,
+               aes(x = 0, xend = `Valves/gr`, y = diatom_depth_m, yend = diatom_depth_m, color = "Valve Counts"),
+               linewidth = 2, alpha = 0.6, color = "darkseagreen2") +
+  # Y-axis: depth reversed
+  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), 
+                  expand = c(0, 0)) +
+  # X-axis: Valve counts with custom formatter - include min, max, and intermediate ticks
+  scale_x_continuous(expand = c(0, 0), position = "bottom",
+                     name = "Diatoms\n(valves/gr)",
+                     breaks = seq(0, max(diatom_data$`Valves/gr`, na.rm = TRUE), length.out = 4),
+                     labels = function(x) paste(x / 1e8, "×10^8"),
+                     sec.axis = sec_axis(~./scale_factor, name = "Si/Ti\nDiatoms",
+                                        labels = scales::number_format(accuracy = 0.1))) +
+
+  # Manual scales - make Si/Ti line dark blue
+  scale_color_manual("", values = c("Valve Counts" = "darkseagreen2", "Si/Ti Ratio" = "darkblue")) +
+  theme_classic() +
+  labs(title = " ", y = "") +
+  theme(legend.position = "none",
+        legend.title = element_blank(),
+        legend.box = "horizontal",
+        axis.ticks.y = element_blank(),
+        axis.line.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.text = element_text(size = 10),
+        plot.margin = unit(c(0, 0, 0.5, -1), "cm"),
+        panel.background = element_blank(),
+        panel.grid = element_blank())
+
+cat("\n✓ Dual-axis overlay created\n")
+cat("  - Left axis: Valve counts (valves/gr) as bars\n")
+cat("  - Right axis: Si/Ti ratio (line, scaled for visibility)\n")
+cat("  - Both synchronized to same depth (10.989-13.822 m)\n")
+overlay_plot
+```
+
+# Hyperspectral imaging (HSI) data plots: pigments and intensity maps
+
+```{r}
+# Plot chlorophyll (from HSI calibration)
+Chl <- ggplot(HSI_data, aes(x = RABD670calib, y = depth_m)) +
+  geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color = PollenZ$color, alpha = 0.8) +
+  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), 
+                  guide = guide_axis(position = "right"), expand = c(0, 0)) +
+  scale_x_continuous(position = "top", expand = c(0, 0)) +
+  geom_path(alpha = 0.8, linewidth = 1, colour = "green3") +
+  labs(title = " ", x = "Total chlorophylls\n(µg/g wet sed)", y = " ") +
+  theme_classic() +
+  theme(legend.position = "none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), 
+        axis.text.y = element_blank(), axis.text = element_text(size = 12), 
+        plot.margin = unit(c(0, 0, 0.5, -0.58), "cm"), panel.background = element_blank())
+
+# Plot bacteriophyophytin-a (Bphe) with age labels
+Bphe <- ggplot(HSI_data, aes(x = RABD845calib, y = depth_m)) +
+  geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color = PollenZ$color, alpha = 0.8) +
+  annotate("text", x = 5.2, y = 13.4, label = "Pleniglacial", color = "blue") +
+  annotate("text", x = 5, y = 12.6, label = "Bølling", color = "darkred") +
+  annotate("text", x = 7.7, y = 12.19, label = "Allerød", color = "darkred") +
+  annotate("text", x = 6.2, y = 11.62, label = "Lachersee\ntephra", color = "black") +
+  annotate("text", x = 5.5, y = 11.1, label = "Younger\nDryas", color = "blue") +
+  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 0.2), digits = 2), 
+                  labels = rev(ages), guide = guide_axis(position = "right"), expand = c(0, 0)) +
+  scale_x_continuous(position = "bottom", expand = c(0, 0)) +
+  geom_path(alpha = 0.8, linewidth = 1, colour = "magenta4") +
+  labs(title = " ", x = "Bacteriophyophytin-a\n(µg/g wet sed)", y = "Age (Cal yr BP)\nnon-linear axis") +
+  theme_classic() +
+  theme(legend.position = "none", axis.text = element_text(size = 12), 
+        plot.margin = unit(c(0, 0.3, 0.5, -0.58), "cm"), panel.background = element_blank(),
+        axis.title.y = element_text(angle = 270, vjust = 0.5))
+
+# Plot cyanobacteria/phycocyanin (RABD620) with mean and SD lines
+Cyano <- ggplot(HSI_data, aes(x = RABD620, y = depth_m)) +
+  geom_hline(yintercept = PollenZ$depth, linetype = PollenZ$line, color = PollenZ$color, alpha = 0.8) +
+  scale_y_reverse(limits = c(13.822, 10.989), breaks = round(seq(10.989, 13.822, by = 1), digits = 2), 
+                  guide = guide_axis(position = "right"), expand = c(0, 0)) +
+  scale_x_continuous(position = "bottom", expand = c(0, 0)) +
+  geom_path(alpha = 0.8, linewidth = 1, colour = "dodgerblue1") +
+  geom_vline(xintercept = mean(HSI_data$RABD620, na.rm = TRUE), color = "dodgerblue1", linetype = 1) +
+  geom_vline(xintercept = mean(HSI_data$RABD620, na.rm = TRUE) + sd(HSI_data$RABD620, na.rm = TRUE), 
+             color = "gray", linetype = 2) +
+  geom_vline(xintercept = mean(HSI_data$RABD620, na.rm = TRUE) - sd(HSI_data$RABD620, na.rm = TRUE), 
+             color = "gray", linetype = 2) +
+  labs(title = " ", x = "RABD620\n(Phycocyanin)", y = " ") +
+  theme_classic() +
+  theme(legend.position = "none", axis.ticks.y = element_blank(), axis.line.y = element_blank(), 
+        axis.text.y = element_blank(), axis.text = element_text(size = 12), 
+        plot.margin = unit(c(0, 0, 0.5, -0.58), "cm"), panel.background = element_blank())
+
+cat("\n✓ Hyperspectral pigment plots created: Chlorophyll, Bacteriophyophytin, Cyanobacteria\n")
+```
+
+# Pigment intensity maps from hyperspectral imaging
+
+```{r}
+library(png)
+
+# Load pigment intensity map images
+PhyMap <- readPNG("../data/SourceData/Phyco.png")
+TchlMap <- readPNG("../data/SourceData/TChl.png")
+BpheMap <- readPNG("../data/SourceData/Bphe_ed.png")
+
+# Create map plots with embedded images
+Phymaps <- ggplot(data = XRF_data, mapping = aes(x = PC2, y = depth_m)) +
+  geom_point(alpha = 0.01) +
+  scale_y_continuous(limits = c(10.989, 13.822), guide = guide_axis(position = "right"), expand = c(0, 0)) +
+  scale_x_continuous(position = "top", expand = c(0, 0)) +
+  theme_cowplot() +
+  annotation_custom(rasterGrob(PhyMap, width = 1, height = 1),
+                    xmin = -4.2, xmax = Inf,
+                    ymin = 10.989, ymax = 13.822) +
+  labs(title = " ", x = " ", y = " ") +
+  theme(legend.position = "none", axis.text = element_blank(), 
+        plot.margin = unit(c(0, 0, 0.5, -0.8), "cm"), panel.background = element_blank(), 
+        axis.line.x = element_blank(), axis.ticks.x = element_blank(), 
+        axis.line.y = element_blank(), axis.ticks.y = element_blank())
+
+TChlmaps <- ggplot(data = XRF_data, mapping = aes(x = PC2, y = depth_m)) +
+  geom_point(alpha = 0.01) +
+  scale_y_continuous(limits = c(10.989, 13.822), guide = guide_axis(position = "right"), expand = c(0, 0)) +
+  scale_x_continuous(position = "top", expand = c(0, 0)) +
+  theme_cowplot() +
+  annotation_custom(rasterGrob(TchlMap, width = 1, height = 1),
+                    xmin = -4.2, xmax = Inf,
+                    ymin = 10.989, ymax = 13.822) +
+  labs(title = " ", x = " ", y = " ") +
+  theme(legend.position = "none", axis.text = element_blank(), 
+        plot.margin = unit(c(0, 0, 0.5, -0.8), "cm"), panel.background = element_blank(), 
+        axis.line.x = element_blank(), axis.ticks.x = element_blank(), 
+        axis.line.y = element_blank(), axis.ticks.y = element_blank())
+
+Bphemaps <- ggplot(data = XRF_data, mapping = aes(x = PC2, y = depth_m)) +
+  geom_point(alpha = 0.01) +
+  scale_y_continuous(limits = c(10.989, 13.822), guide = guide_axis(position = "right"), expand = c(0, 0)) +
+  scale_x_continuous(position = "top", expand = c(0, 0)) +
+  theme_cowplot() +
+  annotation_custom(rasterGrob(BpheMap, width = 1, height = 1),
+                    xmin = -4.2, xmax = Inf,
+                    ymin = 10.989, ymax = 13.822) +
+  labs(title = " ", x = " ", y = " ") +
+  theme(legend.position = "none", axis.text = element_blank(), 
+        plot.margin = unit(c(0, 0, 0.5, -0.8), "cm"), panel.background = element_blank(), 
+        axis.line.x = element_blank(), axis.ticks.x = element_blank(), 
+        axis.line.y = element_blank(), axis.ticks.y = element_blank())
+
+cat("\n✓ Pigment intensity maps loaded and plotted: Phycocyanin, Total Chlorophyll, Bacteriophyophytin\n")
+```
+
+```{r}
+# Side-by-side diatom and Si/Ti comparison can be viewed separately
+# diatom_plot has been replaced with valve_plot and overlay_plot
+cat("\n✓ Use overlay_plot to see valve counts and Si/Ti combined\n")
+```
+
+# Combined Figure: Final publication plot with XRF, diatoms, and hyperspectral data
+
+```{r}
+# Save as PNG (includes pigment intensity maps)
+png(filename = timestamp_filename("../figs", "Figure1B_with_Diatoms_HSI"), width = 1754, height = 1240, units = "px", pointsize = 12, res = 105)
+
+# Create the complete combined plot grid including hyperspectral data
+# Order: Ti, Ca, overlay_plot (diatoms + Si/Ti), Crom, HClust, CONISS, PC1, PC2, 
+#        Phyco map, Cyano, Tchl map, Chl, Bphe map, Bphe
+linePlot <- plot_grid(Ti, Ca, overlay_plot, Crom, p4, p5, PC1ax, PC2ax, 
+                      Phymaps, Cyano, TChlmaps, Chl, Bphemaps, Bphe,
+  nrow = 1, 
+  align = "h",
+  rel_widths = c(1.2, 0.8, 0.9, 0.7,
+                  0.3, 0.3,
+                  1.2, 1.1,
+                  0.2, 0.7, 0.2, 0.7, 0.2, 1.1), 
+  axis = "tb")
+
+linePlot
+dev.off()
+
+# Save as SVG using ggsave (vector format - without embedded image maps for SVG compatibility)
+# SVG version without pigment map images (which don't embed well in SVG)
+# Uses all line plots instead: Ti, Ca, overlay, Crom, HClust, CONISS, PC1, PC2, Cyano, Chl, Bphe
+linePlot_svg <- plot_grid(Ti, Ca, overlay_plot, Crom, p4, p5, PC1ax, PC2ax, 
+                          Cyano, Chl, Bphe,
+  nrow = 1, 
+  align = "h",
+  rel_widths = c(1.2, 0.8, 0.9, 0.7,
+                  0.3, 0.3,
+                  1.2, 1.1,
+                  0.7, 0.7, 1.1), 
+  axis = "tb")
+
+# Save SVG with ggsave
+svg_filename <- timestamp_filename("../figs", "Figure1B_with_Diatoms_HSI", ".svg")
+ggsave(svg_filename, plot = linePlot_svg, width = 16, height = 12, units = "in", device = "svg", dpi = 300)
+
+cat("\n=== FIGURE GENERATION ===\n")
+cat("✓ Combined figure saved (PNG, with maps): Figure1B_with_Diatoms_HSI.png\n")
+cat("✓ Combined figure saved (SVG, vector): Figure1B_with_Diatoms_HSI.svg\n")
+cat("  PNG: Ti, Ca, Diatom+Si/Ti, Crom, HClust, CONISS, PC1, PC2,\n")
+cat("       Phyco map, Cyano, TChl map, Chl, Bphe map, Bphe\n")
+cat("  SVG: Ti, Ca, Diatom+Si/Ti, Crom, HClust, CONISS, PC1, PC2, Cyano, Chl, Bphe\n")
+
+linePlot
+
+
+svg(filename = timestamp_filename("../figs", "Figure1B_with_Diatoms_HSI"), width = 1754, height = 1240)
+linePlot
+dev.off()
+```
+
+```{r}
+# Create labeled panel figure
+cow_B <- plot_grid(NULL, linePlot,
+                   rel_heights = c(0, 0.99),
+                   rel_widths = c(0.01, 1),
+                   ncol = 1,
+                   labels = c(" ", "B"),
+                   label_fontfamily = "sans")
+
+cat("✓ Panel B with label created\n")
+```
+
+```{r}
+# Load Panel A from saved RDS (if available)
+tryCatch({
+  Fig1AC <- readRDS("../figs/Fig1AC.rds")
+  cat("✓ Panel A loaded from saved file\n")
+  cat("All components ready for complete Figure 1 assembly\n")
+}, error = function(e) {
+  cat("Note: Fig1AC.rds not found - create separately if needed\n")
+})
+```
