@@ -151,7 +151,7 @@ ls data/SourceData/ | wc -l  # Should see 20+ files
 
 - **GitHub Repository:** https://github.com/Epta13/Holzmaar2022-2025
 - **Publication:** "Zahajska et al. 2026, Biogeosciences"
-- **Data Citation:** Zenodo [link to be added]
+- **Data Citation:** Zenodo https://doi.org/10.5281/zenodo.18429717
 - **RStudio Project:** Open `holzmaar.Rproj` in RStudio
 
 ---
