@@ -59,7 +59,7 @@ The workflow is organized into a **modular, reproducible pipeline**, ensuring tr
 - Synchronizes disparate datasets (XRF @ 1mm, HSI @ 1mm, external proxies @ variable resolution)
 - Uses linear interpolation to common reference scales
 - Maintains temporal continuity across >23,000 years
-- *Notebooks:* `03_Interpolation.Rmd`, `10_Interpolation_External.Rmd`
+- *Notebooks:* `03_Interpolation.Rmd`, `09_Interpolation_External.Rmd`
 
 ### **2️⃣ Multivariate Analysis & Ecological Modeling**
 
@@ -72,7 +72,7 @@ The workflow is organized into a **modular, reproducible pipeline**, ensuring tr
 - Reduces dimensionality of 30+ elemental measurements
 - Visualizes "State Space" of lake system dynamics
 - Identifies stable states and transitions over millennia
-- *Notebooks:* `04_ClusteringAndPCA_XRF.Rmd`, `06_ClusteringAndPCA_MergedDatasets.Rmd`
+- *Notebooks:* `04_ClusteringAndPCA_XRF.Rmd`, `07_ClusteringAndPCA_MergedDatasets.Rmd`
 
 **Redundancy Analysis (RDA)**
 - Models relationships between **biological response variables** (pigments, diatoms) and **environmental drivers** (temperature, redox, vegetation)
@@ -80,19 +80,19 @@ The workflow is organized into a **modular, reproducible pipeline**, ensuring tr
 - *Notebook:* `11_RDA-Fig3_inUse.Rmd`
 
 **RDA Quality Control & Variable Selection (VIF)**
-- Assesses multicollinearity among environmental predictors using Variance Inflation Factor (VIF), following Blanchet et al. (2008)
-- Documents VIF thresholds, multiple-comparison adjustment, and manuscript-ready QC language for the RDA in `11_RDA-Fig3_inUse.Rmd`
-- Reproduces the RDA and publication figure using automatic VIF-based variable selection, as an alternative to expert manual selection (addresses reviewer suggestions)
 - Explores correlation structure and redundancy among candidate environmental variables ahead of selection
+- Assesses multicollinearity among environmental predictors using Variance Inflation Factor (VIF), following Blanchet et al. (2008)
+- Reproduces the RDA and publication figure using automatic VIF-based variable selection, as an alternative to expert manual selection (addresses reviewer suggestions)
+- Documents VIF thresholds, multiple-comparison adjustment, and manuscript-ready QC language for the RDA in `10_RDA-Fig3_inUse.Rmd`
 - Empirically justifies the chosen VIF threshold by comparing candidate thresholds (3–10)
-- *Notebooks:* `15_RDA_QualityControl_VIF.Rmd`, `16_RDA_VIF_Selection.Rmd`, `17_Variable_Selection_Exploration.Rmd`, `18_Supplement_VIF_Threshold_Analysis.Rmd`
+- *Notebooks:* `11_Variable_Selection_Exploration.Rmd`, `14_RDA_QualityControl_VIF.Rmd`, `15_RDA_VIF_Selection.Rmd`, `17_Supplement_VIF_Threshold_Analysis.Rmd`
 
 **Pollen & Vegetation Modeling**
 - Statistical prediction of missing pollen data (13,258-10,995 BP)
 - Calibration to Meerfelder Maar reference site
 - Tracks pioneer species vs. established forest expansion
 - Provides catchment-scale vegetation history
-- *Notebook:* `08_Pollen_modelling.Rmd`
+- *Notebook:* `23_Pollen_modelling.Rmd`
 
 ### **3️⃣ Synthesis & Visualization**
 
@@ -100,19 +100,19 @@ The workflow is organized into a **modular, reproducible pipeline**, ensuring tr
 - Integrates geochemical redox markers (Mn/Fe ratios)
 - Combines productivity proxies (Chlorophyll-a, Bacteriopheophytin-a)
 - Links to external climate drivers (NGRIP, insolation)
-- *Notebooks:* `12_DiscucssionPlot.Rmd`, `13_DiscucssionPlot_PinusBetula.Rmd`
+- *Notebooks:* `12_DiscucssionPlot.Rmd`, `13_DiscucssionPlot_PinusBetula.Rmd`, `16_Combined_Figure.Rmd`
 
 **Dynamic Visualizations**
 - Time-series stratigraphic plots with automatic dating
 - Multi-panel figures optimized for publication (A4 size)
 - PCA trajectories, clustering dendrograms, correlation heatmaps
 - Pattern-filled publication figures
-- *Notebooks:* `05_Plotting_XRF_clusters.Rmd`, `09_Sequential_Extraction_Plots.Rmd`, `14_Combined_Figure.Rmd`
+- *Notebooks:* `05_Plotting_XRF_clusters.Rmd`, `12_DiscucssionPlot.Rmd`, `19_Sequential_Extraction_Plots.Rmd`
 
 **Diatom & Pigment Supplementary Analyses**
 - Supplementary pigment plots and Chlorophyll a/Pheophytin ratio analysis as a proxy for lake level/water depth
 - Diatom community dendrogram (hierarchical clustering) with compositional barplots by pollen zone
-- *Notebooks:* `19_Pigments_SupplementaryPlots.Rmd`, `20_Chl_Pheo_Diatom_Analysis.Rmd`, `21_Diatom_Dendrogram_Barplot.Rmd`
+- *Notebooks:* `19_Pigments_SupplementaryPlots.Rmd`, `21_Chl_Pheo_Diatom_Analysis.Rmd`, `22_Diatom_Dendrogram_Barplot.Rmd`
 
 ---
 
@@ -155,25 +155,30 @@ Holzmaar2022-2025/
 │   ├── QUICKSTART.md                      # 5-minute setup guide
 │   └── NOTEBOOKS_ANALYSIS.md              # Detailed notebook descriptions
 │
-├── 📓 notebooks/                          # Analysis workflows (18 Rmd files)
+├── 📓 notebooks/                          # Analysis workflows (23 Rmd files)
 │   ├── 00_Map.Rmd                         # Geographic context maps
 │   ├── 01_XRF_norm_clr.Rmd               # Data harmonization & CoDA
 │   ├── 02_ProxyProxy.Rmd                 # Proxy intercorrelations
 │   ├── 03_Interpolation.Rmd              # Resolution alignment
 │   ├── 04_ClusteringAndPCA_XRF.Rmd       # Zonal stratigraphy & PCA
 │   ├── 05_Plotting_XRF_clusters.Rmd      # XRF visualization
-│   ├── 06_ClusteringAndPCA_MergedDatasets.Rmd  # Integrated analysis
-│   ├── 07_LowRes_data_prep.Rmd           # External data preparation
-│   ├── 08_Interpolation_External.Rmd     # Climate proxy integration
-│   ├── 09_RDA-Fig3_inUse.Rmd             # Redundancy analysis
-│   ├── 10_RDA_QualityControl_VIF.Rmd     # VIF assessment
-│   ├── 11_RDA_VIF_Selection.Rmd          # RDA variable selection
-│   ├── 12_Variable_Selection_Exploration.Rmd # Sensitivity analysis
-│   ├── 13_Pigments_SupplementaryPlots.Rmd # Pigment analysis
-│   ├── 14_Sequential_Extraction_Plots.Rmd # Redox chemistry visualization
-│   ├── 15_Chl_Pheo_Diatom_Analysis.Rmd   # Chlorophyll/pheopigment ratios
-│   ├── 16_Diatom_Dendrogram_Barplot.Rmd  # Diatom communities
-│   ├── 17_Pollen_modelling.Rmd           # Climate reconstruction
+│   ├── 06_Plotting_XRF_clusters_with_Diatoms.Rmd # XRF with diatom overlay
+│   ├── 07_ClusteringAndPCA_MergedDatasets.Rmd  # Integrated analysis
+│   ├── 08_LowRes_data_prep.Rmd           # External data preparation
+│   ├── 09_Interpolation_External.Rmd     # Climate proxy integration
+│   ├── 10_RDA-Fig3_inUse.Rmd             # Redundancy analysis (published)
+│   ├── 11_Variable_Selection_Exploration.Rmd # Exploratory variable selection
+│   ├── 12_DiscucssionPlot.Rmd            # Discussion figure
+│   ├── 13_DiscucssionPlot_PinusBetula.Rmd # Discussion figure - pollen variant
+│   ├── 14_RDA_QualityControl_VIF.Rmd     # VIF quality control assessment
+│   ├── 15_RDA_VIF_Selection.Rmd          # RDA with VIF variable selection
+│   ├── 16_Combined_Figure.Rmd            # Combined discussion + RDA figure
+│   ├── 17_Supplement_VIF_Threshold_Analysis.Rmd # Supplementary VIF threshold testing
+│   ├── 18_Pigments_SupplementaryPlots.Rmd # Pigment analysis
+│   ├── 19_Sequential_Extraction_Plots.Rmd # Redox chemistry visualization
+│   ├── 20_Chl_Pheo_Diatom_Analysis.Rmd   # Chlorophyll/pheopigment ratios
+│   ├── 21_Diatom_Dendrogram_Barplot.Rmd  # Diatom communities
+│   ├── 22_Pollen_modelling.Rmd           # Climate reconstruction
 │   ├── *.nb.html                         # Rendered notebook outputs
 │   └── Functions/                        # Utility functions
 │       ├── utility_functions.r
