@@ -152,6 +152,7 @@ Holzmaar2022-2025/
 │
 ├── 📚 Documentation Files
 │   ├── QUICKSTART.md                      # 5-minute setup guide
+│   └── EXECUTION_ORDER.md                 # How to run notebooks in sequence
 │
 ├── 📓 notebooks/                          # Analysis workflows (23 Rmd files)
 │   ├── 00_Map.Rmd                         # Geographic context maps
