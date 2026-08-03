@@ -151,9 +151,7 @@ Holzmaar2022-2025/
 ├── 📄 .gitignore                          # Git configuration
 │
 ├── 📚 Documentation Files
-│   ├── EXECUTION_ORDER.md                 # How to run notebooks in sequence
 │   ├── QUICKSTART.md                      # 5-minute setup guide
-│   └── NOTEBOOKS_ANALYSIS.md              # Detailed notebook descriptions
 │
 ├── 📓 notebooks/                          # Analysis workflows (23 Rmd files)
 │   ├── 00_Map.Rmd                         # Geographic context maps
