@@ -81,6 +81,8 @@ test*.py
 TEST*.R
 *TEST*.R
 EXECUTE*.R
+notebooks/*backup*
+notebooks/quick_*
 
 # Notebook execution test results and logs
 *EXECUTION_LOG*
